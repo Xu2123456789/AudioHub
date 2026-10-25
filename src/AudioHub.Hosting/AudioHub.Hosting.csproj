@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AudioHub.Core\AudioHub.Core.csproj" />
+    <ProjectReference Include="..\AudioHub.Engine\AudioHub.Engine.csproj" />
+    <ProjectReference Include="..\AudioHub.Platform.Windows\AudioHub.Platform.Windows.csproj" />
+    <ProjectReference Include="..\AudioHub.Sources.WindowsLoopback\AudioHub.Sources.WindowsLoopback.csproj" />
+    <ProjectReference Include="..\AudioHub.Sinks.Wasapi\AudioHub.Sinks.Wasapi.csproj" />
+    <ProjectReference Include="..\AudioHub.Sources.Vban\AudioHub.Sources.Vban.csproj" />
+  </ItemGroup>
+
+</Project>

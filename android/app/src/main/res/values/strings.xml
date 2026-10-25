@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AudioHub Sender</string>
+
+    <string name="button_start">开始发送</string>
+    <string name="button_stop">停止发送</string>
+
+    <string name="usage_note">用法：先在电脑上运行 dist\\start-vban.bat（Windows 若弹出防火墙提示，选“允许”），再回到这里点开始。\n点击开始后系统会弹出录屏授权，必须同意，否则抓不到系统声音。</string>
+
+    <string name="error_no_host">请先填写电脑 IP，或点“查找电脑”让它自己找</string>
+    <string name="error_bad_port">端口必须是 1 到 65535 之间的整数</string>
+    <string name="error_projection_denied">已取消：没有录屏授权就抓不到系统声音。</string>
+    <string name="error_no_record_permission">缺少录音权限，无法捕获声音。请在系统设置里为本应用开启麦克风权限。</string>
+
+    <string name="button_find_hub">查找电脑</string>
+    <string name="searching_hub">正在查找…</string>
+    <string name="no_hub_found">没找到电脑。确认电脑上的 AudioHub 正在运行，且手机和它在同一个 Wi-Fi 下。</string>
+    <string name="hubs_found">找到 %1$d 台电脑，点一台即可</string>
+
+    <string name="hub_requires_key">这台电脑要求加密发送。请在电脑上运行 dist\\show-key.bat（或看启动时的输出），把显示的密钥填进来。</string>
+    <string name="hub_accepts_key">这台电脑支持加密发送。填了密钥就更安全；不填也能连，只是明文。</string>
+    <string name="error_key_needed">这台电脑要求加密，请先填写密钥</string>
+    <string name="error_bad_key">密钥看不懂：只认 0-9 和字母（不含 I L O U），可以带或不带短横线</string>
+    <string name="paired_ok">已记住这台电脑，以后不用再输密钥</string>
+
+    <string name="notification_channel_name">音频捕获</string>
+    <string name="notification_title">AudioHub 正在发送音频</string>
+</resources>
