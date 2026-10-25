@@ -27,6 +27,9 @@ public partial class MainWindow : Window
     /// <summary>When the graph last started running, so "no packets yet" can say for how long.</summary>
     private DateTimeOffset? _runningSince;
 
+    /// <summary>When the output device name was last refreshed, to throttle device re-enumeration.</summary>
+    private DateTimeOffset _lastDeviceRefresh;
+
     public MainWindow(IAudioHubHost host, int webPort, string? lanReservationCommand = null)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -56,13 +59,11 @@ public partial class MainWindow : Window
     {
         _host.RefreshOutputDevices();
 
-        DeviceBox.SelectionChanged -= DeviceBox_SelectionChanged;
-        DeviceBox.ItemsSource = _host.OutputDevices;
-        DeviceBox.DisplayMemberPath = nameof(AudioEndpointInfo.Name);
-        DeviceBox.SelectedValuePath = nameof(AudioEndpointInfo.Id);
-        DeviceBox.SelectedValue = _host.OutputDeviceId
-            ?? _host.OutputDevices.FirstOrDefault(d => d.IsDefault)?.Id;
-        DeviceBox.SelectionChanged += DeviceBox_SelectionChanged;
+        // 固定用系统默认输出设备（不提供切换入口），这里只显示它的名字作说明。
+        AudioEndpointInfo? device = _host.OutputDevices.FirstOrDefault(d => d.IsDefault);
+        DeviceNameText.Text = device is null
+            ? "系统默认输出设备（未检测到播放设备）"
+            : $"当前输出：{device.Name}（跟随系统默认设备）";
     }
 
     private void RebuildChannelRows()
@@ -141,6 +142,13 @@ public partial class MainWindow : Window
 
     private void UpdateStatus()
     {
+        // 设备名跟随系统默认设备：插拔耳机 / 切换蓝牙后，2 秒内反映出来。
+        if (DateTimeOffset.UtcNow - _lastDeviceRefresh > TimeSpan.FromSeconds(2))
+        {
+            _lastDeviceRefresh = DateTimeOffset.UtcNow;
+            RefreshDevices();
+        }
+
         bool running = _host.IsRunning;
         _runningSince = running ? _runningSince ?? DateTimeOffset.UtcNow : null;
 
@@ -205,16 +213,6 @@ public partial class MainWindow : Window
         text.AppendLine($"  手机上要填（挑同网段的那个）：{string.Join("  ", LocalIPv4Addresses())}");
         text.Append("  拿不准就用手机热点或 USB 网络共享：那是你自己的私有链路，不受环境影响。");
         return (text.ToString(), true);
-    }
-
-    private async void DeviceBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (DeviceBox.SelectedValue is not string deviceId)
-        {
-            return;
-        }
-
-        await _host.SetOutputDeviceAsync(deviceId).ConfigureAwait(true);
     }
 
     private async void Start_Click(object sender, RoutedEventArgs e)

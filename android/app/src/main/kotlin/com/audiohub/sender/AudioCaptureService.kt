@@ -8,8 +8,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.database.ContentObserver
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
@@ -18,6 +20,9 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.Settings
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import com.audiohub.protocol.SecureEnvelope
 import com.audiohub.protocol.SenderSecurity
 import com.audiohub.protocol.interpretSenderSecurity
@@ -53,11 +58,22 @@ class AudioCaptureService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
 
+    /** 连接前手机原来的媒体音量，用于断开 / 切回时恢复。 -1 表示还没记录。 */
+    private var originalMusicVolume = -1
+
+    /** 本次连接是否正在「自动静音手机」。检测到用户调高音量后置 false，不再干预。 */
+    @Volatile
+    private var autoMuting = false
+
+    /** 监听媒体音量变化，用来识别「用户按音量键调高」这个切回手机外放的信号。 */
+    private var volumeObserver: ContentObserver? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        recoverVolumeIfNeeded(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -113,7 +129,11 @@ class AudioCaptureService : Service() {
                     buildNotification("正在连接 $host:$port${if (sealer != null) "（加密）" else ""}"),
                 )
                 startWorker(resultCode, resultData, host, port, streamName, sealer)
-                return START_NOT_STICKY
+                // START_STICKY：捕获过程中服务若被系统回收，系统会把它重新拉起来，
+                // 重启时 onCreate 里的 recoverVolumeIfNeeded 会把音量恢复回来。
+                // 重启拿不到录屏授权数据（它是一次性的），所以 onStartCommand 收到
+                // null intent 会走 else 分支立即 stopSelf —— 只负责"救音量"，不假装还能继续抓音。
+                return START_STICKY
             }
 
             else -> {
@@ -169,7 +189,7 @@ class AudioCaptureService : Service() {
         stopping = false
         val thread = Thread(
             { runCapture(resultCode, resultData, host, port, streamName, sealer) },
-            "audiohub-vban-capture",
+            "audiohub-vban-coordinator",
         )
         // 不用守护线程：进程一旦被回收，捕获也就没意义了，让它把清理逻辑跑完。
         thread.isDaemon = false
@@ -269,20 +289,108 @@ class AudioCaptureService : Service() {
             CaptureStatus.encrypted = sealer != null
             CaptureStatus.stateMessage = "正在发送"
 
-            val chunk = ByteArray(BYTES_PER_FRAME * FRAMES_PER_READ)
-            val startedAtNanos = System.nanoTime()
-            var lastNotifyNanos = startedAtNanos
+            // 连接成功：静音手机扬声器，让声音只从电脑出。
+            // 手机原本就静音（音量 0）时不干预，用户想外放随时能调高音量切回。
+            mutePhoneSpeaker()
 
+            val startedAtNanos = System.nanoTime()
+
+            // 解耦：把"抓音"和"发网络"拆成两个线程，中间放一个有界队列。
+            // 原来的实现里 read() 和 send() 在同一个循环里串行 —— send() 一旦被网络卡住，
+            // read() 就腾不出手，AudioRecord 那点内部缓冲溢出，采样被系统直接丢掉，
+            // 听感就是断续、爆音。拆开后网络卡住时抓音照常进行，数据先攒在队列里。
+            val queue = ArrayBlockingQueue<ByteArray>(QUEUE_CAPACITY)
+            val captureThread = Thread(
+                { captureLoop(createdRecord, queue) },
+                "audiohub-vban-capture",
+            )
+            val sendThread = Thread(
+                { sendLoop(createdSender, queue, startedAtNanos) },
+                "audiohub-vban-send",
+            )
+            captureThread.start()
+            sendThread.start()
+
+            // 等两个线程都收干净，再走 finally 释放 record / sender / projection。
+            runCatching { captureThread.join() }
+            runCatching { sendThread.join() }
+        } catch (ex: Throwable) {
+            CaptureStatus.lastError = "${ex.javaClass.simpleName}: ${ex.message}"
+        } finally {
+            CaptureStatus.running = false
+            CaptureStatus.stateMessage = if (CaptureStatus.lastError == null) "已停止" else "出错停止"
+
+            record = null
+            sender = null
+            projection = null
+
+            runCatching { localRecord?.stop() }
+            runCatching { localRecord?.release() }
+            runCatching { localSender?.close() }
+            runCatching { localProjection?.stop() }
+
+            releaseWakeLock()
+            restorePhoneSpeaker()
+        }
+    }
+
+    /**
+     * 只负责从 [AudioRecord] 读音频、塞进队列，绝不做网络操作，所以不会被网络卡住。
+     *
+     * 每次读都用一个新数组（而不是复用一个 chunk）：队列跨线程，复用同一个数组
+     * 会让下一次 read 覆盖上一次还没发出去的数据。1 KB/次、每秒约 187 次的分配量，
+     * 在 ART 的年轻代 GC 下微不足道，换来的正确性是值得的。
+     */
+    private fun captureLoop(createdRecord: AudioRecord, queue: ArrayBlockingQueue<ByteArray>) {
+        try {
             while (!stopping) {
+                val chunk = ByteArray(BYTES_PER_FRAME * FRAMES_PER_READ)
                 val read = createdRecord.read(chunk, 0, chunk.size)
                 if (read < 0) {
+                    // 正常停止时 stop() 会让 read 带着错误码返回，这不是真错误。
+                    if (stopping) return
                     throw IllegalStateException("读取音频失败，错误码 $read")
                 }
                 if (read == 0) {
                     continue
                 }
+                val block = if (read == chunk.size) chunk else chunk.copyOf(read)
 
-                createdSender.send(chunk, 0, read)
+                // 背压：队列满了说明发送长期跟不上，丢最旧的一块再放新的，
+                // 保证延迟有上限、不无限增长。丢的是早已过期的音频，而不是正在播的。
+                if (!queue.offer(block)) {
+                    queue.poll()
+                    queue.offer(block)
+                }
+            }
+        } catch (ex: Throwable) {
+            CaptureStatus.lastError = "${ex.javaClass.simpleName}: ${ex.message}"
+        } finally {
+            // 让发送线程知道该退了（它靠 poll 超时 + 这个标志退出）。
+            stopping = true
+        }
+    }
+
+    /**
+     * 只负责从队列取音频、发出去、更新统计。[VbanUdpSender] 非线程安全，
+     * 所以它只能在这一个线程里被调用，统计读取也在这里。
+     */
+    private fun sendLoop(
+        createdSender: VbanUdpSender,
+        queue: ArrayBlockingQueue<ByteArray>,
+        startedAtNanos: Long,
+    ) {
+        var lastNotifyNanos = startedAtNanos
+        try {
+            while (true) {
+                val block = queue.poll(QUEUE_POLL_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                if (block == null) {
+                    // 队列空。若捕获线程已经退出（stopping），这里也收工。
+                    if (stopping) break
+                    continue
+                }
+
+                createdSender.send(block, 0, block.size)
 
                 val nowNanos = System.nanoTime()
                 CaptureStatus.packetsSent = createdSender.packetsSent
@@ -300,30 +408,19 @@ class AudioCaptureService : Service() {
             }
         } catch (ex: Throwable) {
             CaptureStatus.lastError = "${ex.javaClass.simpleName}: ${ex.message}"
-        } finally {
-            CaptureStatus.running = false
-            CaptureStatus.stateMessage = if (CaptureStatus.lastError == null) "已停止" else "出错停止"
-
-            record = null
-            sender = null
-            projection = null
-
-            runCatching { localRecord?.stop() }
-            runCatching { localRecord?.release() }
-            runCatching { localSender?.close() }
-            runCatching { localProjection?.stop() }
-
-            releaseWakeLock()
+            stopping = true
+            // 捕获线程此刻可能还阻塞在 read() 上，不叫停它就不会退出。
+            runCatching { record?.stop() }
         }
     }
 
     /**
-     * 请求停止并把捕获线程收干净。
+     * 请求停止并把捕获/发送两个线程收干净。
      * 由主线程调用（界面按钮或系统回调）时最多阻塞 1.5 秒，远低于 ANR 阈值。
      */
     private fun stopCapture() {
         stopping = true
-        // read() 是阻塞的，stop() 会让它带着错误码返回，循环随即退出。
+        // read() 是阻塞的，stop() 会让它带着错误码返回，捕获线程随即退出。
         runCatching { record?.stop() }
 
         val thread = worker
@@ -391,9 +488,96 @@ class AudioCaptureService : Service() {
         runCatching { if (lock.isHeld) lock.release() }
     }
 
+    /**
+     * 连接成功后把手机媒体音量调到 0（静音），让声音只从电脑出。
+     *
+     * 手机原本就静音（音量 0）时不干预——那种情况下"静音"没有意义，
+     * 反而会抢走用户后续调高音量的动作，所以直接什么都不做。
+     */
+    private fun mutePhoneSpeaker() {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        if (autoMuting || current == 0) {
+            return
+        }
+        originalMusicVolume = current
+        autoMuting = true
+        // 持久化"正在静音"：进程若被强杀（onDestroy/onTaskRemoved 都没跑），
+        // 任何 App 入口再次创建时靠这份记录把音量恢复回来（见 MuteRecovery.kt）。
+        markMuting(this, current)
+        runCatching { am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0) }
+        startVolumeWatcher()
+    }
+
+    /**
+     * 把手机媒体音量恢复到连接前的值，并停止监听。
+     * 断开连接、以及"用户按音量键调高切回外放"时都会走到这里。幂等，可安全重复调用。
+     */
+    private fun restorePhoneSpeaker() {
+        if (!autoMuting) {
+            return
+        }
+        autoMuting = false
+        stopVolumeWatcher()
+        val target = originalMusicVolume
+        originalMusicVolume = -1
+        // 正常恢复了，就清掉"正在静音"的持久化记录，下次启动不该再兜底。
+        clearMuting(this)
+        if (target > 0) {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            runCatching { am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+        }
+    }
+
+    /**
+     * 监听系统媒体音量变化，识别「用户按音量键调高」这个切回手机外放的信号。
+     * 判断依据：我们刚把它设成 0，音量从 0 变 >0 只可能是用户主动调高。
+     */
+    private fun startVolumeWatcher() {
+        stopVolumeWatcher()
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                if (!autoMuting) {
+                    return
+                }
+                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                val volume = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                if (volume > 0) {
+                    restorePhoneSpeaker()
+                }
+            }
+        }
+        volumeObserver = observer
+        runCatching {
+            contentResolver.registerContentObserver(
+                Settings.System.CONTENT_URI,
+                true,
+                observer,
+            )
+        }
+    }
+
+    private fun stopVolumeWatcher() {
+        val observer = volumeObserver ?: return
+        volumeObserver = null
+        runCatching { contentResolver.unregisterContentObserver(observer) }
+    }
+
+    /**
+     * 用户在最近任务里把 App 划掉。前台服务本身不会因为这个动作被杀（通知还在），
+     * 但用户的心智模型是"划掉 = 关掉"；这里把音量恢复、把服务一起收掉，
+     * 避免出现"App 没了、声音还卡在静音、电脑却还在响"的错位。
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        restorePhoneSpeaker()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         stopCapture()
         releaseWakeLock()
+        restorePhoneSpeaker()
         super.onDestroy()
     }
 
@@ -446,5 +630,16 @@ class AudioCaptureService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val NOTIFICATION_REFRESH_NANOS = 2_000_000_000L
         private const val WAKE_LOCK_TIMEOUT_MILLIS = 4L * 60L * 60L * 1000L
+
+        /**
+         * 队列最多攒多少块音频（每块 = 一个包 = 256 帧 ≈ 5.33 ms）。
+         * 64 块 ≈ 341 ms，这是发送延迟的上限：网络顺畅时队列几乎是空的（零延迟），
+         * 只有网络卡住时才往里攒。之前真机观测到的批量下发约 191 ms，
+         * 这个容量足够吸收，又不会把延迟顶得太高。
+         */
+        private const val QUEUE_CAPACITY = 64
+
+        /** 发送线程取队列的超时。短一点能更快响应停止，长一点省 CPU 空转。 */
+        private const val QUEUE_POLL_TIMEOUT_MILLIS = 200L
     }
 }
