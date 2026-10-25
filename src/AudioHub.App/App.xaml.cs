@@ -99,7 +99,6 @@ public partial class App : Application
     {
         Forms.ContextMenuStrip menu = new();
         menu.Items.Add("打开 AudioHub…", null, (_, _) => ShowWindow());
-        menu.Items.Add("刷新设备列表", null, (_, _) => _host?.RefreshOutputDevices());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => Shutdown());
 

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -17,6 +18,8 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -50,10 +53,16 @@ class MainActivity : Activity() {
     private lateinit var toggleButton: Button
     private lateinit var statusView: TextView
     private lateinit var hubListView: LinearLayout
+    private lateinit var updateButton: Button
+    private lateinit var shareModeGroup: RadioGroup
+
+    private var shareWholeRadioId = 0
 
     private lateinit var pairings: PairedHubStore
 
     private val handler = Handler(Looper.getMainLooper())
+
+    private val updater: Updater by lazy { Updater(this) }
 
     /** 权限被拒后要不要接着去要录屏授权。 */
     private var pendingStart = false
@@ -82,6 +91,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pairings = PairedHubStore(this)
+        // 兜底恢复：若上次静音后进程被杀（记录残留），打开 App 时就把音量恢复回去。
+        // 之前只放在服务 onCreate 里，但"杀后台后重开"走的是主界面、服务根本不启动，
+        // 所以必须在这里也做一次（逻辑抽在 MuteRecovery.kt，两端共用一份键）。
+        recoverVolumeIfNeeded(this)
         setContentView(buildUi())
         restoreSelection()
         renderHubList()
@@ -170,6 +183,27 @@ class MainActivity : Activity() {
         }
         column.addView(keyView)
 
+        // 共享来源：决定系统授权弹窗里默认共享"整个屏幕"还是"单个应用"。
+        // 这只是 Android 14 起"预填默认项"的提示，真正的授权确认仍需用户点。
+        column.addView(label(getString(R.string.share_mode_label)))
+        shareModeGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+        }
+        val wholeRadio = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.share_mode_whole)
+        }
+        val appRadio = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.share_mode_app)
+        }
+        shareWholeRadioId = wholeRadio.id
+        shareModeGroup.addView(wholeRadio)
+        shareModeGroup.addView(appRadio)
+        val savedShare = prefs.getString(KEY_SHARE_MODE, SHARE_WHOLE)
+        if (savedShare == SHARE_APP) appRadio.isChecked = true else wholeRadio.isChecked = true
+        column.addView(shareModeGroup)
+
         toggleButton = Button(this).apply {
             text = getString(R.string.button_start)
             setOnClickListener { onToggleClicked() }
@@ -192,6 +226,13 @@ class MainActivity : Activity() {
                 text = getString(R.string.usage_note)
             },
         )
+
+        column.addView(label(getString(R.string.update_section)))
+        updateButton = Button(this).apply {
+            text = getString(R.string.button_check_update)
+            setOnClickListener { onCheckUpdateClicked() }
+        }
+        column.addView(updateButton)
 
         // 密钥没能被硬件保护时要说出来。静默降级等于假装安全。
         pairings.storageNote?.let { note ->
@@ -525,8 +566,33 @@ class MainActivity : Activity() {
         savePrefs()
 
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_PROJECTION)
+        startActivityForResult(buildCaptureIntent(manager), REQUEST_PROJECTION)
     }
+
+    /**
+     * 按"共享来源"设置构造授权 Intent。
+     *
+     * 关键边界（务必理解）：MediaProjection 授权是 Android 的强制安全机制，
+     * 弹窗由系统控制、每次都要用户点"允许"，第三方 App 无法记住或跳过。
+     * 这里能做的只是 Android 14（API 34）起的"预填默认显示区域"：
+     * 选"整个屏幕"时弹窗直接预填整个屏幕，省掉"选来源"这一步；
+     * Android 11–13 没有这个 API，只能退回默认（系统自己决定弹窗形式）。
+     */
+    private fun buildCaptureIntent(manager: MediaProjectionManager): Intent {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val config = if (shareWholeScreen()) {
+                MediaProjectionConfig.createConfigForDefaultDisplay()
+            } else {
+                MediaProjectionConfig.createConfigForUserChoice()
+            }
+            return manager.createScreenCaptureIntent(config)
+        }
+        return manager.createScreenCaptureIntent()
+    }
+
+    /** 当前选的是否"整个屏幕"（否则是"单个应用"）。 */
+    private fun shareWholeScreen(): Boolean =
+        shareModeGroup.checkedRadioButtonId == shareWholeRadioId
 
     @Deprecated("没有 AndroidX 就得用这个老接口；Activity Result API 属于 AndroidX。")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -587,6 +653,28 @@ class MainActivity : Activity() {
         toggleButton.text = getString(R.string.button_stop)
     }
 
+    // ------------------------------------------------------------ 更新
+
+    private fun onCheckUpdateClicked() {
+        updateButton.isEnabled = false
+        updater.checkForUpdates(object : Updater.Listener {
+            override fun onMessage(msg: String) {
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+            }
+
+            override fun onProgress(percent: Int) {
+                if (percent in 0..100) {
+                    updateButton.text = getString(R.string.update_progress, percent)
+                }
+            }
+
+            override fun onDone() {
+                updateButton.isEnabled = true
+                updateButton.text = getString(R.string.button_check_update)
+            }
+        })
+    }
+
     private fun renderStatus() {
         statusView.text = CaptureStatus.describe()
 
@@ -622,6 +710,7 @@ class MainActivity : Activity() {
             .putString(KEY_PORT, portView.text.toString().trim())
             .putString(KEY_STREAM, streamView.text.toString().trim())
             .putString(KEY_HUB_ID, selectedHubId?.toString() ?: "")
+            .putString(KEY_SHARE_MODE, if (shareModeGroup.checkedRadioButtonId == shareWholeRadioId) SHARE_WHOLE else SHARE_APP)
             .apply()
     }
 
@@ -646,6 +735,9 @@ class MainActivity : Activity() {
         private const val KEY_PORT = "port"
         private const val KEY_STREAM = "stream"
         private const val KEY_HUB_ID = "hubId"
+        private const val KEY_SHARE_MODE = "shareMode"
+        private const val SHARE_WHOLE = "whole"
+        private const val SHARE_APP = "app"
 
         private const val REQUEST_PERMISSIONS = 1001
         private const val REQUEST_PROJECTION = 1002

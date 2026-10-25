@@ -17,6 +17,9 @@
     <!-- 熄屏时不要让 CPU 睡下去，否则捕获会断流 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- 应用内更新：从 GitHub 下载新 APK 后唤起系统安装器（Android 8 起装未知来源要先授权） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -41,5 +44,12 @@
             android:name=".AudioCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <!-- 供"应用内更新"把下载好的 APK 交给系统安装器读（自写 Provider，见 ApkProvider.kt） -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="com.audiohub.sender.apk"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

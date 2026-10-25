@@ -15,10 +15,8 @@
            TextWrapping="Wrap" Foreground="Gray" />
 
             <TextBlock Text="输出设备" FontWeight="SemiBold" Margin="0,0,0,5" />
-            <ComboBox x:Name="DeviceBox" Margin="0,0,0,6"
-                      SelectionChanged="DeviceBox_SelectionChanged" />
-            <TextBlock Text="切换设备会重新打开输出端点，捕获与混音不受影响。"
-                       FontSize="11" Foreground="Gray" Margin="0,0,0,16" />
+            <TextBlock x:Name="DeviceNameText" FontSize="12" Foreground="Gray"
+                       TextWrapping="Wrap" Margin="0,0,0,16" />
 
             <TextBlock Text="音源" FontWeight="SemiBold" Margin="0,0,0,5" />
             <StackPanel x:Name="ChannelPanel" />

@@ -5,7 +5,7 @@
     <string name="button_start">开始发送</string>
     <string name="button_stop">停止发送</string>
 
-    <string name="usage_note">用法：先在电脑上运行 dist\\start-vban.bat（Windows 若弹出防火墙提示，选“允许”），再回到这里点开始。\n点击开始后系统会弹出录屏授权，必须同意，否则抓不到系统声音。</string>
+    <string name="usage_note">用法：先在电脑上运行 dist\\start-audiohub.bat（Windows 若弹出防火墙提示，选“允许”），再回到这里点开始。\n点开始后，系统会弹一个“共享”确认框——这是安卓抓取系统声音的强制安全要求，任何软件都躲不掉；点“立即开始/允许”即可，选“整个屏幕”或“单个应用”都能抓到声音。</string>
 
     <string name="error_no_host">请先填写电脑 IP，或点“查找电脑”让它自己找</string>
     <string name="error_bad_port">端口必须是 1 到 65535 之间的整数</string>
@@ -25,4 +25,12 @@
 
     <string name="notification_channel_name">音频捕获</string>
     <string name="notification_title">AudioHub 正在发送音频</string>
+
+    <string name="share_mode_label">共享来源</string>
+    <string name="share_mode_whole">整个屏幕</string>
+    <string name="share_mode_app">单个应用</string>
+
+    <string name="update_section">更新</string>
+    <string name="button_check_update">检查更新</string>
+    <string name="update_progress">下载中 %1$d%%</string>
 </resources>

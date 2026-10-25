@@ -32,7 +32,15 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
     private readonly VbanTransport? _transport;
     private readonly DiscoveryListener? _discovery;
     private readonly ISecureEnvelope? _envelope;
+    private readonly DefaultDeviceWatcher _defaultDeviceWatcher;
     private readonly object _gate = new();
+
+    /// <summary>
+    /// Serialises every transition of the output sink — start, stop, explicit device switch, and
+    /// the reopen triggered by a default-device change — so a COM callback racing a UI click
+    /// cannot stop/dispose the sink out from under another transition.
+    /// </summary>
+    private readonly SemaphoreSlim _sinkSwapGate = new(1, 1);
 
     private WasapiSink? _sink;
     private bool _running;
@@ -105,6 +113,12 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
                 _networkSource.Format,
                 MixerChannelOptions.Network with { JitterBufferMs = _options.NetworkJitterBufferMs });
         }
+
+        // Follows the system default device for as long as the host is alive. It is cheap, so it
+        // is created even when a specific device is pinned: the reopen handler checks for a pin
+        // and ignores the notification in that case.
+        _defaultDeviceWatcher = new DefaultDeviceWatcher();
+        _defaultDeviceWatcher.DefaultRenderDeviceChanged += OnDefaultRenderDeviceChanged;
     }
 
     /// <summary>
@@ -251,7 +265,15 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
             await _networkSource.StartAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        await OpenSinkAsync(_outputDeviceId, cancellationToken).ConfigureAwait(false);
+        await _sinkSwapGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await OpenSinkAsync(_outputDeviceId, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sinkSwapGate.Release();
+        }
     }
 
     /// <inheritdoc />
@@ -267,11 +289,19 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
             _running = false;
         }
 
-        if (_sink is { } sink)
+        await _sinkSwapGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await sink.StopAsync(cancellationToken).ConfigureAwait(false);
-            await sink.DisposeAsync().ConfigureAwait(false);
-            _sink = null;
+            if (_sink is { } sink)
+            {
+                await sink.StopAsync(cancellationToken).ConfigureAwait(false);
+                await sink.DisposeAsync().ConfigureAwait(false);
+                _sink = null;
+            }
+        }
+        finally
+        {
+            _sinkSwapGate.Release();
         }
 
         if (_localSource is not null)
@@ -303,14 +333,15 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
             return;
         }
 
-        if (_sink is { } existing)
+        await _sinkSwapGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await existing.StopAsync(cancellationToken).ConfigureAwait(false);
-            await existing.DisposeAsync().ConfigureAwait(false);
-            _sink = null;
+            await ReplaceSinkAsync(deviceId, cancellationToken).ConfigureAwait(false);
         }
-
-        await OpenSinkAsync(deviceId, cancellationToken).ConfigureAwait(false);
+        finally
+        {
+            _sinkSwapGate.Release();
+        }
     }
 
     /// <inheritdoc />
@@ -348,6 +379,9 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
         // Last rather than first: StopAsync waits briefly for the receive loop, and doing that
         // while nothing else is running makes the wait meaningful instead of racing the teardown.
         _discovery?.Dispose();
+
+        _defaultDeviceWatcher.DefaultRenderDeviceChanged -= OnDefaultRenderDeviceChanged;
+        _defaultDeviceWatcher.Dispose();
 
         _mixer.Dispose();
 
@@ -387,5 +421,79 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
 
         _sink = sink;
         await sink.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Stops the current sink, if any, and opens a fresh one on <paramref name="deviceId"/>.
+    /// Callers must hold <see cref="_sinkSwapGate"/>.
+    /// </summary>
+    private async Task ReplaceSinkAsync(string? deviceId, CancellationToken cancellationToken)
+    {
+        if (_sink is { } existing)
+        {
+            await existing.StopAsync(cancellationToken).ConfigureAwait(false);
+            await existing.DisposeAsync().ConfigureAwait(false);
+            _sink = null;
+        }
+
+        await OpenSinkAsync(deviceId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Handles a default-device change. The callback is on a COM thread, so this just fires an
+    /// async reopen and returns immediately; the reopen is serialised with every other sink
+    /// transition by <see cref="_sinkSwapGate"/>.
+    /// </summary>
+    private void OnDefaultRenderDeviceChanged(object? sender, EventArgs e)
+        => _ = ReopenSinkAfterDefaultDeviceChangedAsync();
+
+    private async Task ReopenSinkAfterDefaultDeviceChangedAsync()
+    {
+        await _sinkSwapGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            bool running;
+            string? deviceId;
+            lock (_gate)
+            {
+                running = _running;
+                deviceId = _outputDeviceId;
+            }
+
+            // A pinned device (set via CLI) is the user's explicit choice, so the default moving
+            // is not our concern. null means "follow the default", which is exactly what changed.
+            // A null _sink while running means StartAsync is mid-flight and about to open the
+            // current default anyway, so there is nothing to replace yet.
+            if (!running || deviceId is not null || _sink is null)
+            {
+                return;
+            }
+
+            // A device transition can land in a brief window where the old endpoint is gone but
+            // the new default is not openable yet. Retry a few times so the switch completes
+            // without the user having to pause and resume. If it still fails the sink stays
+            // stopped and the next default-device change (or a manual start/stop) retries it.
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    await ReplaceSinkAsync(deviceId, CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+                catch
+                {
+                    if (attempt == 3)
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(150, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            _sinkSwapGate.Release();
+        }
     }
 }
