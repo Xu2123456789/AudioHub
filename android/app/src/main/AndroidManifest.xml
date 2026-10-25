@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 发送 VBAN 报文 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 回放捕获（抓手机正在播放的声音）要求持有录音权限 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 捕获要在前台服务里跑，否则切到后台就被系统掐掉 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14（API 34）起，前台服务必须声明具体类型 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Android 13 起，前台服务通知要用户授权才会显示 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 熄屏时不要让 CPU 睡下去，否则捕获会断流 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.Light">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 捕获服务。exported=false：只有本应用能启动它。 -->
+        <service
+            android:name=".AudioCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+    </application>
+</manifest>

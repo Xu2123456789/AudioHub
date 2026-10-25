@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Deliberately net8.0 rather than net8.0-windows: nothing in this module touches a
+         Windows API, only System.Net.Sockets. That keeps the promise that a future Linux
+         hub can reuse it verbatim. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AudioHub.Core\AudioHub.Core.csproj" />
+  </ItemGroup>
+
+</Project>

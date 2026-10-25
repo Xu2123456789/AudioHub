@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AudioHub</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #f6f6f5; color: #2c2c2a; }
+  header { padding: 16px 20px; background: #fff; border-bottom: 1px solid #e3e2dd; display: flex; align-items: baseline; gap: 12px; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  .meta { font-size: 12px; color: #6b6a66; }
+  main { max-width: 720px; margin: 0 auto; padding: 20px; }
+  .card { background: #fff; border: 1px solid #e3e2dd; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: #444441; }
+  .channel { display: grid; grid-template-columns: 1fr 130px 84px 60px; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid #f0efec; }
+  .channel:first-of-type { border-top: none; }
+  .name { font-size: 14px; }
+  .level { height: 6px; background: #edece8; border-radius: 3px; overflow: hidden; }
+  .level > span { display: block; height: 100%; background: #1d9e75; width: 0%; }
+  .db { font-size: 12px; color: #6b6a66; text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; }
+  select { width: 100%; padding: 7px 8px; font-size: 13px; border: 1px solid #d3d1c7; border-radius: 6px; background: #fff; }
+  button { padding: 7px 14px; font-size: 13px; border: 1px solid #d3d1c7; border-radius: 6px; background: #fff; cursor: pointer; }
+  button.primary { background: #1d9e75; border-color: #1d9e75; color: #fff; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .status { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #edece8; color: #5f5e5a; }
+  .status.on { background: #e1f5ee; color: #0f6e56; }
+  .empty { font-size: 13px; color: #888780; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AudioHub</h1>
+  <span class="meta" id="meta">连接中…</span>
+  <span class="status" id="status">—</span>
+</header>
+<main>
+  <div class="card">
+    <h2>输出设备</h2>
+    <select id="device"></select>
+    <p class="meta" id="deviceNote" style="margin:8px 0 0"></p>
+  </div>
+
+  <div class="card">
+    <h2>音源</h2>
+    <div id="channels"><p class="empty">暂无音源</p></div>
+  </div>
+
+  <div class="card">
+    <h2>控制</h2>
+    <div class="row">
+      <button class="primary" id="startBtn">启动</button>
+      <button id="stopBtn">停止</button>
+      <span class="meta" id="hint">音量滑块单位为 dB，拖动即时生效。</span>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;
+
+function levelBar(level) {
+  const pct = Math.min(100, Math.round(level * 250));
+  return `<div class="level"><span style="width:${pct}%"></span></div>`;
+}
+
+function renderChannels() {
+  const box = $('channels');
+  if (!state || !state.channels.length) {
+    box.innerHTML = '<p class="empty">暂无音源</p>';
+    return;
+  }
+  box.innerHTML = state.channels.map(c => `
+    <div class="channel">
+      <div>
+        <div class="name">${c.id}</div>
+        ${levelBar(c.level)}
+      </div>
+      <input type="range" min="-60" max="20" step="0.5" value="${c.gainDb}" data-id="${c.id}">
+      <span class="db">${c.gainDb.toFixed(1)} dB</span>
+      <button data-mute="${c.id}">${c.muted ? '已静音' : '静音'}</button>
+    </div>`).join('');
+
+  box.querySelectorAll('input[type=range]').forEach(slider => {
+    slider.addEventListener('input', async (e) => {
+      const db = parseFloat(e.target.value);
+      e.target.parentElement.querySelector('.db').textContent = db.toFixed(1) + ' dB';
+      await post('/api/gain', { id: e.target.dataset.id, gainDb: db });
+    });
+  });
+
+  box.querySelectorAll('button[data-mute]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.mute;
+      const current = state.channels.find(c => c.id === id);
+      await post('/api/mute', { id, muted: !current.muted });
+      await refresh();
+    });
+  });
+}
+
+function renderDevices() {
+  const select = $('device');
+  const devices = state?.devices ?? [];
+  const current = state?.outputDeviceId ?? devices.find(d => d.isDefault)?.id ?? null;
+  select.innerHTML = devices
+    .map(d => `<option value="${d.id}" ${d.id === current ? 'selected' : ''}>${d.name}${d.isDefault ? '（默认）' : ''}</option>`)
+    .join('');
+  $('deviceNote').textContent = devices.length ? '切换设备会重新打开输出端点，捕获与混音不受影响。' : '没有检测到播放设备。';
+}
+
+async function post(url, body) {
+  await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
+
+async function refresh() {
+  try {
+    state = await (await fetch('/api/state')).json();
+    $('meta').textContent = `${state.sampleRate} Hz · ${state.channels.length} 路音源`;
+    $('status').textContent = state.running ? '运行中' : '已停止';
+    $('status').className = 'status' + (state.running ? ' on' : '');
+    renderChannels();
+    renderDevices();
+  } catch (err) {
+    $('meta').textContent = '无法连接到 AudioHub';
+  }
+}
+
+$('device').addEventListener('change', async (e) => {
+  await post('/api/device', { id: e.target.value });
+  await refresh();
+});
+$('startBtn').addEventListener('click', async () => { await post('/api/start', {}); await refresh(); });
+$('stopBtn').addEventListener('click', async () => { await post('/api/stop', {}); await refresh(); });
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

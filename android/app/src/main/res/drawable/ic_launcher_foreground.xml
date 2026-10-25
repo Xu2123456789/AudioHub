@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    启动器图标的前景层（108x108dp）。
+
+    图形：三条音轨从左侧汇聚到一个节点，右侧接一副耳机 —— 就是"多设备的声音
+    汇到一副耳机"这件事本身。线条都是白色、圆头，和电脑端托盘图标同源。
+
+    只用矢量：minSdk 是 30，自适应图标（API 26+）已经够用，不必为每个 dpi 存 PNG。
+    mipmap-*dpi 下的 PNG 是给个别只看静态图的启动器兜底的，两者由
+    tools/make_icons.py 从同一份绘制代码生成，不会画歪。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 上、中、下三条音轨，终点都是汇聚节点 (54,54) -->
+    <path
+        android:pathData="M22,36 C40,36 44,52 54,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M22,54 L54,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M22,72 C40,72 44,56 54,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- 汇聚节点 -->
+    <path
+        android:pathData="M50,54 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0"
+        android:fillColor="#FFFFFF" />
+
+    <!-- 耳机头梁：圆心 (72,56)、半径 10 的上半圆 -->
+    <path
+        android:pathData="M62,56 A10,10 0 0,1 82,56"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- 左右耳罩，比头梁略粗 -->
+    <path
+        android:pathData="M62,57 L62,62"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M82,57 L82,62"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

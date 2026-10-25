@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>AudioHub.App</RootNamespace>
+    <!-- exe 文件本身的图标（资源管理器里看到的那个） -->
+    <ApplicationIcon>Assets\AudioHub.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 同一份 ico 也给 WPF 当窗口图标用 -->
+    <Resource Include="Assets\AudioHub.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WinForms is only used for the tray icon. Dropping its implicit global using
+         keeps its type names from colliding with WPF's. -->
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AudioHub.Hosting\AudioHub.Hosting.csproj" />
+    <ProjectReference Include="..\AudioHub.Web\AudioHub.Web.csproj" />
+  </ItemGroup>
+
+</Project>
