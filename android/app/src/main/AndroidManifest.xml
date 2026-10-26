@@ -51,5 +51,14 @@
             android:authorities="com.audiohub.sender.apk"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!-- 拍二维码时的临时照片落点：系统相机要能写入这个 content:// 地址。
+             只服务缓存目录下的 scan/，用完即删（见 CaptureProvider.kt）。
+             注意：这里没有 CAMERA 权限，也不需要——拍照由系统相机应用完成。 -->
+        <provider
+            android:name=".CaptureProvider"
+            android:authorities="com.audiohub.sender.photo"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

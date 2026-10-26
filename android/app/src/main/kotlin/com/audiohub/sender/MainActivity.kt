@@ -2,9 +2,11 @@ package com.audiohub.sender
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -12,6 +14,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
+import android.text.InputFilter
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
@@ -23,11 +27,21 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.audiohub.protocol.ConnectionQr
 import com.audiohub.protocol.DiscoveredHub
 import com.audiohub.protocol.DiscoveryClient
+import com.audiohub.protocol.QrPayload
 import com.audiohub.protocol.SecureEnvelope
 import com.audiohub.protocol.SecurityMode
+import com.audiohub.protocol.ShortCode
 import com.audiohub.vban.VbanPacketWriter
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.DecodeHintType
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.HybridBinarizer
+import java.io.File
 import java.util.UUID
 
 /**
@@ -50,6 +64,9 @@ class MainActivity : Activity() {
     private lateinit var keyView: EditText
     private lateinit var keyHintView: TextView
     private lateinit var findButton: Button
+    private lateinit var scanButton: Button
+    private lateinit var codeButton: Button
+    private lateinit var advancedContainer: LinearLayout
     private lateinit var toggleButton: Button
     private lateinit var statusView: TextView
     private lateinit var hubListView: LinearLayout
@@ -66,6 +83,9 @@ class MainActivity : Activity() {
 
     /** 权限被拒后要不要接着去要录屏授权。 */
     private var pendingStart = false
+
+    /** 这次拍照扫码的临时照片；系统相机写完后由我们读取并删除。 */
+    private var pendingScanFile: File? = null
 
     /** 选中的那台电脑。null 表示用户手填地址、没走发现。 */
     private var selectedHubId: UUID? = null
@@ -145,6 +165,28 @@ class MainActivity : Activity() {
         }
         column.addView(hubListView)
 
+        // 自动发现失败时的两条快速通道。放在 IP 输入框上面，因为它们比手打地址更省事。
+        val manualRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+
+        scanButton = Button(this).apply {
+            text = getString(R.string.button_scan_qr)
+            setOnClickListener { startPhotoScan() }
+        }
+        codeButton = Button(this).apply {
+            text = getString(R.string.button_short_code)
+            setOnClickListener { askForShortCode() }
+        }
+
+        manualRow.addView(
+            scanButton,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        manualRow.addView(
+            codeButton,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) },
+        )
+        column.addView(manualRow)
+
         column.addView(label("电脑 IP（点上面找到的电脑会自动填；也可以手填）"))
         hostView = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
@@ -153,19 +195,39 @@ class MainActivity : Activity() {
         }
         column.addView(hostView)
 
-        column.addView(label("端口（保持 6980，除非电脑端改过）"))
+        // 端口和流名称默认藏起来：绝大多数人不需要改，摆在外面只会让第一次打开更吓人。
+        val advancedToggle = TextView(this).apply {
+            text = getString(R.string.advanced_toggle)
+            textSize = 12f
+            setPadding(0, dp(10), 0, dp(2))
+            isClickable = true
+            setOnClickListener {
+                advancedContainer.visibility =
+                    if (advancedContainer.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            }
+        }
+        column.addView(advancedToggle)
+
+        advancedContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+
+        advancedContainer.addView(label("端口（保持 6980，除非电脑端改过）"))
         portView = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(prefs.getString(KEY_PORT, AudioCaptureService.DEFAULT_PORT.toString()))
         }
-        column.addView(portView)
+        advancedContainer.addView(portView)
 
-        column.addView(label("流名称（电脑端默认不校验，留空即用 AudioHub）"))
+        advancedContainer.addView(label("流名称（电脑端默认不校验，留空即用 AudioHub）"))
         streamView = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT
             setText(prefs.getString(KEY_STREAM, AudioCaptureService.DEFAULT_STREAM))
         }
-        column.addView(streamView)
+        advancedContainer.addView(streamView)
+
+        column.addView(advancedContainer)
 
         // 密钥输入框默认藏着：绝大多数人用不上（电脑默认是明文模式）。
         // 只有选中的电脑要求加密、或支持加密时，才把它显示出来。
@@ -597,6 +659,12 @@ class MainActivity : Activity() {
     @Deprecated("没有 AndroidX 就得用这个老接口；Activity Result API 属于 AndroidX。")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == REQUEST_SCAN_PHOTO) {
+            onPhotoScanResult(resultCode)
+            return
+        }
+
         if (requestCode != REQUEST_PROJECTION) {
             return
         }
@@ -653,6 +721,192 @@ class MainActivity : Activity() {
         toggleButton.text = getString(R.string.button_stop)
     }
 
+    // ------------------------------------------------------------ 扫码 / 短码
+
+    /**
+     * 用系统相机拍一张电脑屏幕，再在本地解码。
+     *
+     * 为什么不做实时预览扫描：实时扫描要么自己用 Camera2 搭预览（两百多行，旋转、对焦、
+     * 各家 ROM 差异都在里面），要么引 zxing-android-embedded（会拖进 AndroidX / AppCompat，
+     * 而本项目一直不引 AndroidX）。拍一张静态照片只需要系统相机，**连 CAMERA 权限都不用申请**；
+     * 对着一张不动的二维码，可靠性和"多按一次快门"相比是划算的。
+     */
+    private fun startPhotoScan() {
+        if (CaptureStatus.running) {
+            Toast.makeText(this, getString(R.string.stop_before_connecting), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val directory = CaptureProvider.scanDir(this)
+        directory.mkdirs()
+        val file = File(directory, "scan-${System.currentTimeMillis()}.jpg")
+        val output = CaptureProvider.contentUriFor(file.name)
+
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(MediaStore.EXTRA_OUTPUT, output)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        if (intent.resolveActivity(packageManager) == null) {
+            Toast.makeText(this, getString(R.string.camera_missing), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        pendingScanFile = file
+        startActivityForResult(intent, REQUEST_SCAN_PHOTO)
+    }
+
+    private fun onPhotoScanResult(resultCode: Int) {
+        val file = pendingScanFile
+        pendingScanFile = null
+
+        if (resultCode != RESULT_OK || file == null || !file.isFile) {
+            file?.delete()
+            return
+        }
+
+        // 解码几百毫秒到一秒，放后台线程，避免主线程卡住。
+        Thread {
+            val payload = runCatching { decodeQr(file) }.getOrNull()
+            file.delete()
+
+            handler.post {
+                if (isFinishing || isDestroyed) {
+                    return@post
+                }
+
+                if (payload == null) {
+                    Toast.makeText(this, getString(R.string.scan_failed), Toast.LENGTH_LONG).show()
+                } else {
+                    applyQrPayload(payload)
+                }
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /** 解码一张照片。缩放上限 1600 px：再大只是浪费内存，对识别没有帮助。 */
+    private fun decodeQr(file: File): QrPayload? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+
+        var sample = 1
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        while (longest / sample > 1600) {
+            sample *= 2
+        }
+
+        val bitmap = BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: return null
+
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        bitmap.recycle()
+
+        val binary = BinaryBitmap(HybridBinarizer(RGBLuminanceSource(width, height, pixels)))
+        val reader = MultiFormatReader().apply {
+            setHints(
+                mapOf(
+                    DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                    DecodeHintType.TRY_HARDER to true,
+                ),
+            )
+        }
+
+        return ConnectionQr.parse(reader.decode(binary).text)
+    }
+
+    /** 把扫到的内容填进界面。密钥按电脑身份存进配对表，和手输密钥走同一套 TOFU。 */
+    private fun applyQrPayload(payload: QrPayload) {
+        val hubId = payload.hubId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+
+        if (payload.carriesKey && hubId == null) {
+            // 有密钥却没有身份：存不进"按电脑身份记住"的表，硬发只会退成明文。
+            Toast.makeText(this, getString(R.string.qr_missing_identity), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val psk = payload.pairingKey?.let { SecureEnvelope.parse(it) }
+        if (payload.pairingKey != null && psk == null) {
+            Toast.makeText(this, getString(R.string.error_bad_key), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        hostView.setText(payload.host)
+        portView.setText(payload.port.toString())
+        selectedHubId = hubId
+        selectedSecurityMode = if (psk != null) SecurityMode.REQUIRED else SecurityMode.NONE
+
+        if (hubId != null && psk != null) {
+            pairings.remember(hubId, psk, payload.name.orEmpty(), payload.host, payload.port)
+            keyView.setText("")
+            Toast.makeText(
+                this,
+                getString(R.string.qr_applied, payload.name ?: payload.host),
+                Toast.LENGTH_SHORT,
+            ).show()
+        } else {
+            Toast.makeText(this, getString(R.string.qr_address_only), Toast.LENGTH_LONG).show()
+        }
+
+        updateKeyVisibility()
+        renderHubList()
+        savePrefs()
+    }
+
+    /** 六位短码：纯本地解出地址，不需要网络。 */
+    private fun askForShortCode() {
+        if (CaptureStatus.running) {
+            Toast.makeText(this, getString(R.string.stop_before_connecting), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            hint = getString(R.string.short_code_hint)
+            filters = arrayOf(InputFilter.LengthFilter(ShortCode.LENGTH + 4))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.short_code_title)
+            .setView(input)
+            .setPositiveButton(R.string.short_code_ok) { _, _ -> applyShortCode(input.text.toString()) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun applyShortCode(raw: String) {
+        val address = ShortCode.decode(raw)
+        if (address == null) {
+            Toast.makeText(this, getString(R.string.short_code_failed), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        hostView.setText(address)
+        portView.setText(ShortCode.DEFAULT_PORT.toString())
+
+        // 短码不带身份，但地址能反查"这台以前配过没有"。配过就沿用已存的密钥，
+        // 否则会从"加密"悄悄退回明文 —— 在要求加密的电脑上，表现就是永远没有声音。
+        val pairing = pairings.all().firstOrNull { it.host == address }
+        if (pairing != null) {
+            selectedHubId = pairing.hubId
+            selectedSecurityMode = SecurityMode.OPTIONAL
+            Toast.makeText(this, getString(R.string.short_code_paired, address), Toast.LENGTH_SHORT).show()
+        } else {
+            selectedHubId = null
+            selectedSecurityMode = SecurityMode.NONE
+            Toast.makeText(this, getString(R.string.short_code_no_pairing, address), Toast.LENGTH_LONG).show()
+        }
+
+        updateKeyVisibility()
+        renderHubList()
+        savePrefs()
+    }
+
     // ------------------------------------------------------------ 更新
 
     private fun onCheckUpdateClicked() {
@@ -687,6 +941,8 @@ class MainActivity : Activity() {
         streamView.isEnabled = !running
         keyView.isEnabled = !running
         findButton.isEnabled = !running && !searching
+        scanButton.isEnabled = !running
+        codeButton.isEnabled = !running
     }
 
     /**
@@ -741,6 +997,7 @@ class MainActivity : Activity() {
 
         private const val REQUEST_PERMISSIONS = 1001
         private const val REQUEST_PROJECTION = 1002
+        private const val REQUEST_SCAN_PHOTO = 1003
         private const val REFRESH_INTERVAL_MILLIS = 500L
     }
 }

@@ -33,4 +33,22 @@
     <string name="update_section">更新</string>
     <string name="button_check_update">检查更新</string>
     <string name="update_progress">下载中 %1$d%%</string>
+
+    <string name="button_scan_qr">拍照扫二维码</string>
+    <string name="button_short_code">输入短码</string>
+    <string name="advanced_toggle">高级：端口 / 流名称（保持默认即可）</string>
+
+    <string name="short_code_title">输入电脑上的六位短码</string>
+    <string name="short_code_hint">例如 0M3RM2</string>
+    <string name="short_code_ok">连接</string>
+    <string name="short_code_failed">短码不对（抄错一位就对不上），请对着电脑屏幕再核一遍</string>
+    <string name="short_code_paired">已填入 %1$s（这台配过对，可直接开始）</string>
+    <string name="short_code_no_pairing">已填入 %1$s；这台还没配对，若电脑要求加密请先用二维码配对</string>
+
+    <string name="scan_failed">没认出二维码。请对准电脑上的二维码、拍清楚一点再试</string>
+    <string name="qr_applied">已读取电脑信息：%1$s，点开始发送即可</string>
+    <string name="qr_address_only">已填入地址；这张二维码不含密钥，首次配对还需输入密钥</string>
+    <string name="qr_missing_identity">这张二维码缺少电脑身份，无法记住密钥。请改用“查找电脑”或短码</string>
+    <string name="camera_missing">没有找到可用的相机应用，无法拍照扫码</string>
+    <string name="stop_before_connecting">先停止发送，再改连接方式</string>
 </resources>

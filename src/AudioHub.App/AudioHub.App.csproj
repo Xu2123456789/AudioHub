@@ -9,6 +9,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>AudioHub.App</RootNamespace>
+    <!-- Kept in step with the CLI and the Android versionName (see CHANGELOG.md). -->
+    <Version>2.1.0</Version>
     <!-- exe 文件本身的图标（资源管理器里看到的那个） -->
     <ApplicationIcon>Assets\AudioHub.ico</ApplicationIcon>
   </PropertyGroup>
@@ -27,6 +29,10 @@
   <ItemGroup>
     <ProjectReference Include="..\AudioHub.Hosting\AudioHub.Hosting.csproj" />
     <ProjectReference Include="..\AudioHub.Web\AudioHub.Web.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="QRCoder" Version="1.6.0" />
   </ItemGroup>
 
 </Project>

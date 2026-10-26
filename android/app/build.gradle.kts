@@ -25,8 +25,9 @@ android {
         targetSdk = 34
         // 1.0.0 = 第一个"真机上能正常听"的版本：电脑自激回授已修、本机缓冲已修、
         // 手机到电脑的链路在真机（Redmi K80 走 WiFi）上跑通。详见根目录 CHANGELOG.md。
-        versionCode = 1
-        versionName = "1.0.0"
+        // 2.1.0 = 短码 / 二维码手动连接。版本号只影响应用内更新的比较，必须单调递增。
+        versionCode = 2
+        versionName = "2.1.0"
     }
 
     buildTypes {
@@ -60,4 +61,8 @@ dependencies {
 
     // 发现协议（找电脑）+ 加密信封（发加密音频），同样是纯 Kotlin/JVM。
     implementation(project(":protocol"))
+
+    // 二维码解码只用 ZXing 的纯 Java 核心。刻意不用 zxing-android-embedded：
+    // 那个会拖进 AndroidX / AppCompat，而本项目一直不引 AndroidX（见文件头的取舍）。
+    implementation("com.google.zxing:core:3.5.3")
 }

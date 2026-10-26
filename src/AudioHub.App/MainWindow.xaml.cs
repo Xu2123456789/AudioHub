@@ -1,12 +1,17 @@
+using System.IO;
 using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using AudioHub.Core;
+using AudioHub.Core.Connection;
 using AudioHub.Hosting;
 using AudioHub.Platform.Windows;
+using QRCoder;
 
 // UseWPF and UseWindowsForms both contribute implicit global usings and clash on
 // several type names, so anything ambiguous gets an explicit alias.
@@ -30,6 +35,33 @@ public partial class MainWindow : Window
     /// <summary>When the output device name was last refreshed, to throttle device re-enumeration.</summary>
     private DateTimeOffset _lastDeviceRefresh;
 
+    /// <summary>Remembers whether the QR code includes the pairing key. Default is on.</summary>
+    private readonly UiSettings _settings = UiSettings.Load();
+
+    /// <summary>
+    /// Set while the code expands or collapses the panel itself, so that "user touched it" is
+    /// not recorded for something the user did not do. Without it the 15-second auto-expand
+    /// would be indistinguishable from the user opening it, and auto-collapse would never run.
+    /// </summary>
+    private bool _suppressPanelEvents;
+
+    /// <summary>True once the user opened or closed the panel by hand; stops all automation.</summary>
+    private bool _userTouchedPanel;
+
+    /// <summary>True while the panel is expanded because nothing has arrived yet.</summary>
+    private bool _autoExpanded;
+
+    /// <summary>When the first packet arrived, so the panel can retract a few seconds later.</summary>
+    private DateTimeOffset? _firstPacketAt;
+
+    /// <summary>When the transient "copied" hint should disappear.</summary>
+    private DateTimeOffset _copyHintUntil;
+
+    private string _recommendedAddress = string.Empty;
+    private string _pairingKey = string.Empty;
+    private bool _keyVisible;
+    private bool _qrVisible;
+
     public MainWindow(IAudioHubHost host, int webPort, string? lanReservationCommand = null)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -44,6 +76,13 @@ public partial class MainWindow : Window
 
         RefreshDevices();
         RebuildChannelRows();
+
+        // Set the remembered choice without treating it as a user action.
+        _suppressPanelEvents = true;
+        QrIncludeKeyCheck.IsChecked = _settings.QrIncludesPairingKey;
+        _suppressPanelEvents = false;
+
+        RefreshConnectionInfo();
 
         _timer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -147,6 +186,9 @@ public partial class MainWindow : Window
         {
             _lastDeviceRefresh = DateTimeOffset.UtcNow;
             RefreshDevices();
+            // Switching Wi-Fi or plugging in USB tethering changes the address the phone needs,
+            // so the manual panel has to follow it without the user reopening the window.
+            RefreshConnectionInfo();
         }
 
         bool running = _host.IsRunning;
@@ -176,6 +218,13 @@ public partial class MainWindow : Window
         foreach (KeyValuePair<string, ProgressBar> pair in _meters)
         {
             pair.Value.Value = _host.Mixer.GetLevel(pair.Key);
+        }
+
+        UpdateManualPanelAutomation(running);
+
+        if (CopyHint.Text.Length > 0 && DateTimeOffset.UtcNow > _copyHintUntil)
+        {
+            CopyHint.Text = string.Empty;
         }
     }
 
@@ -213,6 +262,305 @@ public partial class MainWindow : Window
         text.AppendLine($"  手机上要填（挑同网段的那个）：{string.Join("  ", LocalIPv4Addresses())}");
         text.Append("  拿不准就用手机热点或 USB 网络共享：那是你自己的私有链路，不受环境影响。");
         return (text.ToString(), true);
+    }
+
+    // ------------------------------------------------------------ 手动连接（折叠面板）
+
+    /// <summary>
+    /// Fills the manual-connection panel. Everything shown here already exists on the host:
+    /// the identity, the pairing key and the transport counters. Nothing new had to be plumbed
+    /// through, which is why this panel cannot drift away from what the phone actually needs.
+    /// </summary>
+    private void RefreshConnectionInfo()
+    {
+        List<(string Address, bool Recommended)> addresses = LocalIPv4WithRole();
+
+        _recommendedAddress = addresses.Where(a => a.Recommended).Select(a => a.Address).FirstOrDefault()
+            ?? addresses.Select(a => a.Address).FirstOrDefault()
+            ?? string.Empty;
+
+        AddressText.Text = addresses.Count == 0
+            ? "未检测到局域网地址"
+            : string.Join("   ", addresses.Select(a => a.Recommended ? a.Address + "（推荐）" : a.Address));
+
+        // The tray always uses the default port, and a short code does not carry a port,
+        // so these two numbers are fixed rather than configurable here.
+        PortsText.Text = "6980 音频 · 6979 发现";
+
+        _pairingKey = _host.PairingKey ?? string.Empty;
+        KeyText.Text = _pairingKey.Length == 0
+            ? "未启用加密（明文接收）"
+            : _keyVisible ? _pairingKey : new string('•', 12);
+        RevealKeyButton.Content = _keyVisible ? "隐藏" : "显示";
+        RevealKeyButton.IsEnabled = _pairingKey.Length > 0;
+        CopyKeyButton.IsEnabled = _pairingKey.Length > 0;
+
+        FingerprintText.Text = _host.Identity.Fingerprint;
+
+        if (ShortCode.TryEncode(_recommendedAddress, out string code))
+        {
+            ShortCodeText.Text = code;
+            ShortCodeHeader.Text = code;
+            ShortCodeNote.Text = "手机输入这 6 位";
+        }
+        else
+        {
+            ShortCodeText.Text = "—";
+            ShortCodeHeader.Text = string.Empty;
+            ShortCodeNote.Text = addresses.Count == 0 ? "没有可用地址" : "此网段不支持短码，请用二维码";
+        }
+
+        if (_qrVisible)
+        {
+            RegenerateQr();
+        }
+    }
+
+    /// <summary>
+    /// Builds the QR payload and renders it. The key is included only when the user left the
+    /// switch on; with it off the code still gets the phone to the right address, but a first
+    /// pairing will ask for the key.
+    /// </summary>
+    private void RegenerateQr()
+    {
+        if (_recommendedAddress.Length == 0)
+        {
+            QrImage.Source = null;
+            QrNote.Text = "没有可用地址，二维码生成不了。";
+            return;
+        }
+
+        bool includeKey = QrIncludeKeyCheck.IsChecked == true && _pairingKey.Length > 0;
+        string payload = ConnectionQr.Build(new ConnectionQrPayload(
+            _recommendedAddress,
+            ShortCode.DefaultPort,
+            includeKey ? _pairingKey : null,
+            _host.Identity.HubId,
+            _host.Identity.Fingerprint,
+            Environment.MachineName));
+
+        QrImage.Source = RenderQr(payload);
+        QrNote.Text = includeKey
+            ? "二维码含配对密钥：手机扫一次即可完成配对。不要把它留在公共可见的地方。"
+            : "二维码只含地址：手机首次配对仍需输入密钥。";
+    }
+
+    /// <summary>Encodes the payload with medium error correction and returns a frozen image.</summary>
+    private static BitmapImage RenderQr(string text)
+    {
+        using QRCodeGenerator generator = new();
+        using QRCodeData data = generator.CreateQrCode(text, QRCodeGenerator.ECCLevel.M);
+        PngByteQRCode png = new(data);
+        byte[] bytes = png.GetGraphic(6);
+
+        BitmapImage image = new();
+        using MemoryStream stream = new(bytes);
+        image.BeginInit();
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.StreamSource = stream;
+        image.EndInit();
+        image.Freeze();
+        return image;
+    }
+
+    private void ManualExpander_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (_suppressPanelEvents)
+        {
+            return;
+        }
+
+        _userTouchedPanel = true;
+        RefreshConnectionInfo();
+    }
+
+    private void ManualExpander_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressPanelEvents)
+        {
+            return;
+        }
+
+        _userTouchedPanel = true;
+    }
+
+    private void RevealKey_Click(object sender, RoutedEventArgs e)
+    {
+        _keyVisible = !_keyVisible;
+        RefreshConnectionInfo();
+    }
+
+    private void CopyAddress_Click(object sender, RoutedEventArgs e) =>
+        CopyToClipboard(_recommendedAddress, "地址");
+
+    private void CopyKey_Click(object sender, RoutedEventArgs e) =>
+        CopyToClipboard(_pairingKey, "配对密钥");
+
+    private void CopyAll_Click(object sender, RoutedEventArgs e)
+    {
+        string text =
+            "AudioHub 连接信息" + Environment.NewLine
+            + "地址：" + _recommendedAddress + Environment.NewLine
+            + "端口：6980" + Environment.NewLine
+            + "配对密钥：" + (_pairingKey.Length == 0 ? "未启用加密" : _pairingKey) + Environment.NewLine
+            + "身份指纹：" + _host.Identity.Fingerprint;
+
+        CopyToClipboard(text, "连接信息");
+    }
+
+    private void CopyToClipboard(string text, string what)
+    {
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Clipboard.SetText(text);
+            CopyHint.Text = $"已复制{what}";
+            _copyHintUntil = DateTimeOffset.UtcNow.AddSeconds(2);
+        }
+        catch (ExternalException)
+        {
+            // Another process holds the clipboard. Saying so beats a silent no-op.
+            CopyHint.Text = "复制失败：剪贴板正被其他程序占用";
+            _copyHintUntil = DateTimeOffset.UtcNow.AddSeconds(3);
+        }
+    }
+
+    private void ToggleQr_Click(object sender, RoutedEventArgs e)
+    {
+        _qrVisible = !_qrVisible;
+        QrImage.Visibility = _qrVisible ? Visibility.Visible : Visibility.Collapsed;
+        ShowQrButton.Content = _qrVisible ? "隐藏二维码" : "显示二维码";
+
+        if (_qrVisible)
+        {
+            RegenerateQr();
+        }
+        else
+        {
+            QrNote.Text = string.Empty;
+        }
+    }
+
+    private void QrIncludeKey_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressPanelEvents)
+        {
+            return;
+        }
+
+        _settings.QrIncludesPairingKey = QrIncludeKeyCheck.IsChecked == true;
+        _settings.Save();
+
+        if (_qrVisible)
+        {
+            RegenerateQr();
+        }
+    }
+
+    /// <summary>
+    /// Expands the panel after 15 seconds without a single packet, and retracts it three seconds
+    /// after the first one arrives. Both are skipped once the user has touched the panel: an
+    /// expander that closes itself under the user's hands is worse than no automation at all.
+    /// </summary>
+    private void UpdateManualPanelAutomation(bool running)
+    {
+        if (_userTouchedPanel)
+        {
+            return;
+        }
+
+        bool receiving = _host.TransportStats is { PacketsAccepted: > 0 };
+
+        if (receiving)
+        {
+            _firstPacketAt ??= DateTimeOffset.UtcNow;
+
+            if (_autoExpanded && DateTimeOffset.UtcNow - _firstPacketAt > TimeSpan.FromSeconds(3))
+            {
+                SetPanelExpanded(false);
+                _autoExpanded = false;
+            }
+
+            return;
+        }
+
+        _firstPacketAt = null;
+
+        if (!running || _autoExpanded)
+        {
+            return;
+        }
+
+        int waited = _runningSince is { } since
+            ? (int)(DateTimeOffset.UtcNow - since).TotalSeconds
+            : 0;
+
+        if (waited >= 15)
+        {
+            SetPanelExpanded(true);
+            _autoExpanded = true;
+        }
+    }
+
+    private void SetPanelExpanded(bool expanded)
+    {
+        _suppressPanelEvents = true;
+        ManualExpander.IsExpanded = expanded;
+        _suppressPanelEvents = false;
+    }
+
+    /// <summary>
+    /// Local IPv4 addresses, with exactly one marked as recommended: the first one on an
+    /// interface that is up and has a default gateway. Virtual adapters and Bluetooth PAN
+    /// usually have no gateway, so they end up below the line rather than leading the list.
+    /// </summary>
+    private static List<(string Address, bool Recommended)> LocalIPv4WithRole()
+    {
+        List<(string Address, bool HasGateway)> found = new();
+
+        foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (nic.OperationalStatus != OperationalStatus.Up
+                || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+            {
+                continue;
+            }
+
+            bool hasGateway = nic.GetIPProperties().GatewayAddresses
+                .Any(g => g.Address is not null && !g.Address.Equals(System.Net.IPAddress.Any));
+
+            foreach (UnicastIPAddressInformation address in nic.GetIPProperties().UnicastAddresses)
+            {
+                if (address.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    continue;
+                }
+
+                string text = address.Address.ToString();
+
+                // APIPA means the interface never got a lease, so nothing can reach it.
+                if (text.StartsWith("169.254.", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                found.Add((text, hasGateway));
+            }
+        }
+
+        int recommended = found.FindIndex(a => a.HasGateway);
+        if (recommended < 0 && found.Count > 0)
+        {
+            recommended = 0;
+        }
+
+        return found
+            .Select((a, index) => (a.Address, index == recommended))
+            .ToList();
     }
 
     private async void Start_Click(object sender, RoutedEventArgs e)
