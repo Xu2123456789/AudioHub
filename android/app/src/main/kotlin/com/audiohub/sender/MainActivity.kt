@@ -18,11 +18,14 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.text.InputFilter
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsetsController
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -124,7 +127,28 @@ class MainActivity : Activity() {
     /** 最近一次查到的电脑。 */
     private var candidates: List<DiscoveredHub> = emptyList()
 
+    /**
+     * 见过名字的电脑（身份 → 名字）。
+     *
+     * 单播探测回来时会带着电脑的名字，但那台电脑不一定在 [candidates] 里
+     * （用户是手填地址/输短码连的）。不记下来，界面上就只剩一个 IP，
+     * 而他刚才明明在电脑屏幕上看到过那台电脑的名字。
+     */
+    private val hubNames = HashMap<UUID, String>()
+
     private var searching = false
+
+    /** 探测慢时才弹的那条"正在确认…"提示；探测结束要能撤销它。 */
+    private var progressHint: Runnable? = null
+
+    /** 提示条里现在是不是那条进度提示（是的话，探测一结束就该收起来）。 */
+    private var noticeIsProgress = false
+
+    /** 运行中上一次"电脑还要求加密吗"的检查时间。 */
+    private var lastModeCheckAt = 0L
+
+    /** 已经就"电脑改了设置"提示过一次；每次重新开始发送时复位。 */
+    private var modeDriftNotified = false
 
     /**
      * 这次发送真正要交给服务的两条 extra（电脑身份 + 密钥）。
@@ -145,6 +169,15 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 状态栏跟着页面底色走，图标转深色。不然去掉 ActionBar 之后，
+        // 顶上会剩一条和页面不同色的横带，看着像少画了一块。
+        window.statusBarColor = BG
+        window.insetsController?.setSystemBarsAppearance(
+            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+        )
+
         pairings = PairedHubStore(this)
         // 兜底恢复：若上次静音后进程被杀（记录残留），打开 App 时就把音量恢复回去。
         // 之前只放在服务 onCreate 里，但"杀后台后重开"走的是主界面、服务根本不启动，
@@ -153,6 +186,14 @@ class MainActivity : Activity() {
         setContentView(buildUi())
         restoreSelection()
         renderHubList()
+
+        // 恢复出来的模式是"上次启动时的说法"，而电脑随时能改（现在是热切换）。
+        // 所以在后台问一次，问到了就把显示纠正过来 —— 否则用户会在没点开始之前
+        // 看到一句已经过时的"将加密发送/明文发送"。
+        val restoredHost = hostView.text.toString().trim()
+        if (selectedHubId != null && restoredHost.isNotEmpty()) {
+            identifyAddress(restoredHost) { }
+        }
     }
 
     override fun onStart() {
@@ -167,6 +208,10 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(refresher)
+        // 探测的进度提示也要撤：Activity 关掉之后它再跑一次只是往一个已经废掉的
+        // 视图上写字，虽然不崩，但会让人以为是新提示。
+        progressHint?.let { handler.removeCallbacks(it) }
+        progressHint = null
         super.onDestroy()
     }
 
@@ -179,7 +224,22 @@ class MainActivity : Activity() {
         }
 
         // ---- 抬头 ------------------------------------------------------------
-        column.addView(
+        // 用一个真正的抬头（图标 + 标题 + 副标题）替掉系统 ActionBar 的那条灰带。
+        // 图标就是启动器图标，和电脑端托盘、安卓桌面看到的是同一个标志。
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(16))
+        }
+        header.addView(
+            ImageView(this).apply {
+                setImageResource(R.mipmap.ic_launcher)
+                layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(12) }
+            },
+        )
+
+        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        titles.addView(
             TextView(this).apply {
                 text = "AudioHub"
                 textSize = 22f
@@ -187,14 +247,16 @@ class MainActivity : Activity() {
                 setTextColor(INK)
             },
         )
-        column.addView(
+        titles.addView(
             TextView(this).apply {
                 text = getString(R.string.app_subtitle)
                 textSize = 13f
                 setTextColor(MUTED)
-                setPadding(0, dp(3), 0, dp(14))
+                setPadding(0, dp(3), 0, 0)
             },
         )
+        header.addView(titles)
+        column.addView(header)
 
         // ---- 当前连接 + 开始 / 停止 -------------------------------------------
         // 连哪台、加不加密、能不能开始 —— 这三件事决定用户下一步按什么，
@@ -519,6 +581,8 @@ class MainActivity : Activity() {
 
         noticeView.text = message
         noticeView.visibility = View.VISIBLE
+        // 任何一条真实提示都覆盖掉"正在确认"的标记，免得探测结束时把它误当进度提示收掉。
+        noticeIsProgress = false
 
         // 滚到提示那儿：提示条在状态卡片下面，手机上可能正好在屏幕外，
         // 那样"报了错却没人看见"和没报是一样的。
@@ -660,6 +724,9 @@ class MainActivity : Activity() {
 
     private fun selectHub(hub: DiscoveredHub) {
         clearTypedKeyIfTargetChanged(hub.hubId)
+        if (hub.name.isNotBlank()) {
+            hubNames[hub.hubId] = hub.name
+        }
         selectedHubId = hub.hubId
         selectedSecurityMode = hub.securityMode
         hostView.setText(hub.host)
@@ -670,6 +737,9 @@ class MainActivity : Activity() {
 
     private fun selectPaired(pairing: PairedHubStore.Pairing) {
         clearTypedKeyIfTargetChanged(pairing.hubId)
+        if (pairing.name.isNotBlank()) {
+            hubNames[pairing.hubId] = pairing.name
+        }
         selectedHubId = pairing.hubId
         selectedSecurityMode = advertisedModeFor(pairing.hubId)
         hostView.setText(pairing.host)
@@ -698,20 +768,35 @@ class MainActivity : Activity() {
     private fun identifyAddress(host: String, onSettled: (DiscoveredHub?) -> Unit) {
         toggleButton.isEnabled = false
 
+        // 上一次探测留下的进度提示还没撤，先撤掉：连点两次时不能让旧的那条盖住新的结果。
+        progressHint?.let { handler.removeCallbacks(it) }
+
         // 局域网往返是毫秒级，所以正常情况下不该看到任何"正在确认"。
         // 300ms 后才提示：既不给每次点开始都闪一句噪音，也不至于让网络不对的人
         // 面对一个按下去没反应的按钮。
-        val slowHint = Runnable { showNotice(getString(R.string.identifying_hub, host)) }
-        handler.postDelayed(slowHint, 300L)
+        val hint = Runnable {
+            showNotice(getString(R.string.identifying_hub, host))
+            noticeIsProgress = true
+        }
+        progressHint = hint
+        handler.postDelayed(hint, 300L)
 
         Thread {
             val hub = runCatching { DiscoveryClient().probeAddress(host, timeoutMs = 1_200L) }.getOrNull()
 
             handler.post {
-                handler.removeCallbacks(slowHint)
+                progressHint?.let { handler.removeCallbacks(it) }
+                progressHint = null
                 toggleButton.isEnabled = true
                 if (isFinishing || isDestroyed) {
                     return@post
+                }
+
+                // 进度提示只是"还在问"，问完了就该消失 —— 否则它会一直挂在页面上，
+                // 看起来像卡住了。真正的结果由 onSettled 自己决定要不要说。
+                if (noticeIsProgress) {
+                    noticeView.visibility = View.GONE
+                    noticeIsProgress = false
                 }
 
                 // 探测期间用户可能已经改了地址。只接受"问的就是当前这个地址"的结果，
@@ -727,12 +812,84 @@ class MainActivity : Activity() {
     }
 
     /**
+     * 运行中每隔几秒问一次电脑"你现在还要加密吗"，发现和正在发的对不上就提示重新开始。
+     *
+     * 为什么必须查：电脑端现在是热切换的。如果把加密从「关闭」改成「仅加密」，
+     * 正在发的明文包会被拒（电脑侧有计数，托盘会说"有设备还没配密钥"）；
+     * 反过来从「仅加密」改成「关闭」，正在发的密文会被当成读不懂的包**整包丢掉**，
+     * 而电脑那边连计数都没有 —— 手机这头只表现为"突然没声音了"，两边都零报错。
+     *
+     * 为什么只能"提示"不能自己重启：安卓的录屏授权令牌是一次性的，
+     * 想重新抓声音必须重新弹一次系统确认框。所以能做的是把原因说清楚，
+     * 让用户点一下停止、再点一下开始。
+     */
+    private fun maybeRecheckMode() {
+        if (!CaptureStatus.running || modeDriftNotified) {
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        if (now - lastModeCheckAt < MODE_RECHECK_MILLIS) {
+            return
+        }
+        lastModeCheckAt = now
+
+        val host = hostView.text.toString().trim()
+        val hubId = selectedHubId ?: return
+        if (host.isEmpty()) {
+            return
+        }
+
+        Thread {
+            val hub = runCatching { DiscoveryClient().probeAddress(host, timeoutMs = 1_000L) }.getOrNull()
+                ?: return@Thread
+
+            handler.post {
+                if (isFinishing || isDestroyed || !CaptureStatus.running) {
+                    return@post
+                }
+
+                // 地址上换了另一台电脑，不是"改了设置"，这次不提示。
+                if (hub.hubId != hubId) {
+                    return@post
+                }
+
+                val sendingEncrypted = CaptureStatus.encrypted
+                val drift = when (hub.securityMode) {
+                    SecurityMode.REQUIRED -> !sendingEncrypted
+                    SecurityMode.NONE -> sendingEncrypted
+                    else -> false
+                }
+
+                if (drift) {
+                    modeDriftNotified = true
+                    // 顺手把已知模式更新掉：这样即使用户直接点停止再开始，也是新的值。
+                    selectedSecurityMode = hub.securityMode
+                    showNotice(getString(R.string.notice_mode_changed))
+                }
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /**
      * 把探测到的电脑信息填进界面。
      *
      * 只写 [selectedSecurityMode]（电脑自己广播的原话），不在这里改写它 ——
      * "要不要加密"仍然只有 [resolveSendMode] 一处判定。
      */
     private fun applyIdentifiedHub(hub: DiscoveredHub) {
+        // 先清掉"上一个目标留下的"密钥，再改身份。顺序反了就没用了。
+        //
+        // 不清的后果是本项目最贵的那种失败：给甲电脑敲过密钥，接着手填/短码连乙，
+        // 乙的身份 + 甲的密钥 → 两边派生出的 AES 密钥不同 → 电脑整包丢弃、
+        // 手机照样显示"加密发送中"，**双方零报错，只是没有声音**。
+        // 点列表里的电脑时走的是 selectHub/selectPaired，它们都有这一句；
+        // 单播探测这条路是后加的，之前漏了。
+        clearTypedKeyIfTargetChanged(hub.hubId)
+        if (hub.name.isNotBlank()) {
+            hubNames[hub.hubId] = hub.name
+        }
+
         selectedHubId = hub.hubId
         selectedSecurityMode = hub.securityMode
 
@@ -882,7 +1039,8 @@ class MainActivity : Activity() {
 
         val id = selectedHubId
         val name = id?.let { wanted ->
-            candidates.firstOrNull { it.hubId == wanted }?.name
+            hubNames[wanted]
+                ?: candidates.firstOrNull { it.hubId == wanted }?.name
                 ?: pairings.all().firstOrNull { it.hubId == wanted }?.name
         }
 
@@ -1045,6 +1203,10 @@ class MainActivity : Activity() {
             return
         }
 
+        // 新的一次发送：把"已经提示过模式变了"的标记清掉。
+        modeDriftNotified = false
+        lastModeCheckAt = 0L
+
         if (!ensurePermissions()) {
             pendingStart = true
             return
@@ -1188,7 +1350,15 @@ class MainActivity : Activity() {
 
         // 取成局部量：要放进下面的 lambda，而成员属性在 lambda 里拿不到智能转换。
         // 这两条 extra 的**内容**已经在 preparePsk 里定好了，这里只负责原样传递。
-        val credentials = pendingCredentials ?: SenderCredentials(null, null)
+        val credentials = pendingCredentials
+        if (credentials == null) {
+            // 走到这里说明"要不要加密"这次根本没定过（典型是：系统权限弹窗期间
+            // Activity 被重建，字段丢了）。**绝不能**在这里默认成明文 ——
+            // 对一台"仅加密"的电脑，明文发出去就是整包被丢、双方零报错。
+            // 宁可让用户再点一次。
+            showNotice(getString(R.string.error_restart_send))
+            return
+        }
         pendingCredentials = null
 
         val intent = Intent(this, AudioCaptureService::class.java).apply {
@@ -1392,6 +1562,11 @@ class MainActivity : Activity() {
 
         hostView.setText(payload.host)
         portView.setText(payload.port.toString())
+        // 名字先取成局部量：它来自另一个模块的属性，Kotlin 不给智能转换。
+        val payloadName = payload.name
+        if (hubId != null && !payloadName.isNullOrBlank()) {
+            hubNames[hubId] = payloadName
+        }
         selectedHubId = hubId
         // 这里以前是 `if (psk != null) REQUIRED else NONE`，等于**用"有没有密钥"覆盖电脑的原话**。
         // 后果：电脑设「仅加密」、而扫到的码不带密钥时，本机模式被写成 NONE，
@@ -1471,6 +1646,8 @@ class MainActivity : Activity() {
             // 只能退回"按地址反查已配对的电脑"，至少让配过对的人还能加密。
             val pairing = pairings.all().firstOrNull { it.host == address }
             if (pairing != null) {
+                // 同样是"先清再改"：手填/短码换到另一台电脑时，框里可能还留着上一台的密钥。
+                clearTypedKeyIfTargetChanged(pairing.hubId)
                 selectedHubId = pairing.hubId
                 selectedSecurityMode = advertisedModeFor(pairing.hubId)
                 Toast.makeText(this, getString(R.string.short_code_paired, address), Toast.LENGTH_SHORT).show()
@@ -1524,7 +1701,7 @@ class MainActivity : Activity() {
             if (running) {
                 val encrypted = CaptureStatus.encrypted
                 linkPlanView.text = if (encrypted) "链路：加密发送中（AES-256-GCM）" else "链路：明文发送中（未加密）"
-                linkPlanView.setTextColor(if (encrypted) 0xFF1D9E75.toInt() else 0xFFA32D2D.toInt())
+                linkPlanView.setTextColor(if (encrypted) SUCCESS else DANGER)
             } else {
                 updateLinkPlan()
             }
@@ -1539,6 +1716,11 @@ class MainActivity : Activity() {
         findButton.isEnabled = !running && !searching
         scanButton.isEnabled = !running
         codeButton.isEnabled = !running
+
+        // 运行中顺手复查一次电脑的加密设置（每 5 秒最多一次）。
+        if (running) {
+            maybeRecheckMode()
+        }
     }
 
     /**
@@ -1597,5 +1779,8 @@ class MainActivity : Activity() {
         private const val REQUEST_SCAN_LIVE = 1004
         private const val REQUEST_CAMERA_PERMISSION = 1005
         private const val REFRESH_INTERVAL_MILLIS = 500L
+
+        /** 运行中复查电脑加密设置的间隔。5 秒足够快，又不至于变成网络噪音。 */
+        private const val MODE_RECHECK_MILLIS = 5_000L
     }
 }

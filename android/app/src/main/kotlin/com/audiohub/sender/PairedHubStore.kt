@@ -41,6 +41,14 @@ class PairedHubStore(context: Context) {
      */
     val storageNote: String?
 
+    /**
+     * 解出来的密钥，按电脑身份缓一份。
+     *
+     * 只为了省掉重复的 Keystore 解密 —— 界面每 500 毫秒问一次"记住了没有"，
+     * 而那也是每次发送前必须问的东西。忘掉/重记时同步更新，不会读到旧值。
+     */
+    private val keyCache = HashMap<UUID, ByteArray>()
+
     init {
         val key = runCatching { loadOrCreateWrappingKey() }.getOrNull()
         if (key != null) {
@@ -70,14 +78,24 @@ class PairedHubStore(context: Context) {
             .put("port", port)
             .put("psk", wrap(psk))
 
+        // 顺手把明文放进缓存：下次 keyFor 就不用再走一遍 Keystore 解密。
+        keyCache[hubId] = psk.copyOf()
         prefs.edit().putString(key(hubId), record.toString()).apply()
     }
 
     /** 取回某台电脑的密钥；没配过返回 null。 */
     fun keyFor(hubId: UUID): ByteArray? {
+        // 界面每 500 毫秒会问一次"这台记住了没有"，每次都走一遍 Keystore 的
+        // AES-GCM 解密是白烧 CPU（有的机型一次几毫秒，还会卡住主线程）。
+        // 明文只在本进程内存里多留一份，磁盘上仍然是 Keystore 封的。
+        keyCache[hubId]?.let { return it }
+
         val stored = prefs.getString(key(hubId), null) ?: return null
         val psk = runCatching { JSONObject(stored).getString("psk") }.getOrNull() ?: return null
-        return runCatching { unwrap(psk) }.getOrNull()
+        val plain = runCatching { unwrap(psk) }.getOrNull() ?: return null
+
+        keyCache[hubId] = plain
+        return plain
     }
 
     /** 已配过的电脑，按名字排序。 */
@@ -108,6 +126,7 @@ class PairedHubStore(context: Context) {
 
     /** 忘掉一台电脑。电脑身份变了（重装、换机）时用得着。 */
     fun forget(hubId: UUID) {
+        keyCache.remove(hubId)
         prefs.edit().remove(key(hubId)).apply()
     }
 

@@ -17,6 +17,8 @@
     <string name="usage_note">用法：先在电脑上运行 dist\\start-audiohub.bat（Windows 若弹出防火墙提示，选“允许”），再回到这里点开始。\n点开始后，系统会弹一个“共享”确认框——这是安卓抓取系统声音的强制安全要求，任何软件都躲不掉；点“立即开始/允许”即可，选“整个屏幕”或“单个应用”都能抓到声音。</string>
 
     <string name="error_no_host">请先填写电脑 IP，或点“查找电脑”让它自己找</string>
+    <string name="error_restart_send">这次没能确定加密方式（界面被系统重建过）。请再点一次「开始发送」。</string>
+    <string name="notice_mode_changed">电脑刚改了加密设置，正在发送的这一路已经被它丢掉了。请点「停止发送」，再点「开始发送」——让手机按电脑的新设置重新发包。录屏授权是一次性的，所以这一步只能你点。</string>
     <string name="error_bad_port">端口必须是 1 到 65535 之间的整数</string>
     <string name="error_projection_denied">已取消：没有录屏授权就抓不到系统声音。</string>
     <string name="error_no_record_permission">缺少录音权限，无法捕获声音。请在系统设置里为本应用开启麦克风权限。</string>

@@ -72,6 +72,9 @@ public partial class MainWindow : Window
     private bool _keyVisible;
     private bool _qrVisible;
 
+    /// <summary>Last payload drawn into the QR image, so an unchanged tick can skip the redraw.</summary>
+    private string? _lastQrPayload;
+
     public MainWindow(IAudioHubHost host, int webPort, string? lanReservationCommand = null)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -369,7 +372,8 @@ public partial class MainWindow : Window
 
         if (_qrVisible)
         {
-            RegenerateQr();
+            // 这条路径每 2 秒跑一次（跟 IP / 默认设备），所以必须判重。
+            RegenerateQrIfChanged();
         }
     }
 
@@ -384,15 +388,47 @@ public partial class MainWindow : Window
         {
             QrImage.Source = null;
             QrNote.Text = "没有可用地址，二维码生成不了。";
+            _lastQrPayload = null;
             return;
         }
 
+        string payload = BuildQrPayload();
+        ApplyQr(payload);
+        _lastQrPayload = payload;
+    }
+
+    /// <summary>
+    /// Same as <see cref="RegenerateQr"/> but skips the work when the payload has not changed.
+    /// </summary>
+    /// <remarks>
+    /// 这张二维码现在默认是展开的，而托盘每 2 秒刷新一次连接信息（为了跟住 IP 和默认设备）。
+    /// 不判重就等于**每 2 秒编码并重画一张二维码**，白烧 UI 线程 —— 而它的内容
+    /// 只在地址、密钥、加密模式、机器名变化时才会变。
+    /// </remarks>
+    private void RegenerateQrIfChanged()
+    {
+        string payload = BuildQrPayload();
+        if (payload == _lastQrPayload)
+        {
+            return;
+        }
+
+        ApplyQr(payload);
+        _lastQrPayload = payload;
+    }
+
+    /// <summary>
+    /// What the QR actually encodes. Kept in one place so "did it change" and "draw it"
+    /// can never disagree about what the code contains.
+    /// </summary>
+    private string BuildQrPayload()
+    {
         bool includeKey = QrIncludeKeyCheck.IsChecked == true && _pairingKey.Length > 0;
 
         // The mode goes in so a scan does not have to guess it. Without this the phone fell back
         // to "encryption optional" and kept sealing packets at a hub that had encryption off,
         // where nothing can read them — silent on both ends.
-        string payload = ConnectionQr.Build(new ConnectionQrPayload(
+        return ConnectionQr.Build(new ConnectionQrPayload(
             _recommendedAddress,
             ShortCode.DefaultPort,
             includeKey ? _pairingKey : null,
@@ -400,6 +436,11 @@ public partial class MainWindow : Window
             _host.Identity.Fingerprint,
             Environment.MachineName,
             _host.SecurityMode));
+    }
+
+    private void ApplyQr(string payload)
+    {
+        bool includeKey = QrIncludeKeyCheck.IsChecked == true && _pairingKey.Length > 0;
 
         QrImage.Source = RenderQr(payload);
         QrNote.Text = includeKey

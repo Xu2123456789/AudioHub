@@ -40,11 +40,14 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.Light">
 
+        <!-- 主界面不要系统 ActionBar：它会顶着一条写着 "AudioHub Sender" 的灰条，
+             和我们自己画的卡片式界面完全两套语言。标题改由界面自己画（带图标 + 副标题）。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:screenOrientation="portrait">
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
