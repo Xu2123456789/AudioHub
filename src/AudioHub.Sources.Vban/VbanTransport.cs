@@ -11,6 +11,13 @@ namespace AudioHub.Sources.Vban;
 /// <remarks>
 /// Exposed because "is the phone actually reaching the PC" is otherwise unanswerable
 /// without listening yourself. Counts let a silent failure be diagnosed remotely.
+/// <para>
+/// <see cref="PacketsRejectedUnencrypted"/> is separated from the rest of the rejections
+/// because it is the only one the user can fix from the phone: it means plain packets are
+/// arriving while this hub insists on encryption, so the phone has no key yet. Folded into
+/// one total it would look identical to a wrong key or a corrupt packet, and the fix for each
+/// is different.
+/// </para>
 /// </remarks>
 public sealed record VbanTransportStats(
     long PacketsAccepted,
@@ -26,6 +33,23 @@ public sealed record VbanTransportStats(
     /// <summary>Nothing received yet.</summary>
     public static VbanTransportStats Empty { get; } =
         new(0, 0, 0, 0, 0f, null, false, null, VbanArrivalStats.Empty);
+
+    /// <summary>
+    /// Of <see cref="PacketsRejected"/>, how many were plain packets refused because this hub
+    /// requires encryption. Zero unless encryption is mandatory.
+    /// </summary>
+    public long PacketsRejectedUnencrypted { get; init; }
+
+    /// <summary>
+    /// When an unencrypted packet was last refused, or null if none ever was.
+    /// </summary>
+    /// <remarks>
+    /// The count on its own cannot drive a diagnosis, because it never goes down. Once a phone has
+    /// been refused and then gets paired, the number stays where it was, and anything reading it
+    /// keeps reporting a problem that is over. That is worse than saying nothing: it buries the
+    /// next real one. The timestamp is what answers "is this still happening".
+    /// </remarks>
+    public DateTimeOffset? LastRejectedUnencryptedUtc { get; init; }
 }
 
 /// <summary>
@@ -156,6 +180,8 @@ public sealed class VbanTransport : ITransport
     private uint _lastFrameCounter;
     private bool _seenAnyFrame;
     private string? _lastRejectionReason;
+    private long _packetsRejectedUnencrypted;
+    private long _lastRejectedUnencryptedTicks;
     private volatile bool _isConnected;
     private bool _disposed;
 
@@ -249,7 +275,21 @@ public sealed class VbanTransport : ITransport
             _gapP95Ms,
             _gapMaxMs,
             Interlocked.Read(ref _burstCount),
-            _maxBurstPackets));
+            _maxBurstPackets))
+    {
+        PacketsRejectedUnencrypted = Interlocked.Read(ref _packetsRejectedUnencrypted),
+        LastRejectedUnencryptedUtc = LastRejectedUnencrypted,
+    };
+
+    /// <summary>When an unencrypted packet was last refused, or null if none ever was.</summary>
+    private DateTimeOffset? LastRejectedUnencrypted
+    {
+        get
+        {
+            long ticks = Interlocked.Read(ref _lastRejectedUnencryptedTicks);
+            return ticks == 0 ? null : new DateTimeOffset(new DateTime(ticks, DateTimeKind.Utc));
+        }
+    }
 
     /// <summary>When the last accepted packet arrived, or null if none has.</summary>
     private DateTimeOffset? LastPacketUtc
@@ -448,6 +488,17 @@ public sealed class VbanTransport : ITransport
                 // permissive mode, which is the default: without it the packet falls through to
                 // the VBAN parser and comes back as "missing the VBAN magic", pointing at the
                 // network when the real cause is a key that does not match this PC's.
+                //
+                // The two are counted apart because they have different fixes. Something that
+                // does not look protected at all is a phone with no key yet — the user can go
+                // and pair it. Something that looks protected but will not open is a wrong key,
+                // and re-pairing is the only answer.
+                if (_requireEncryption && !envelope.LooksProtected(packet))
+                {
+                    Interlocked.Increment(ref _packetsRejectedUnencrypted);
+                    Interlocked.Exchange(ref _lastRejectedUnencryptedTicks, DateTime.UtcNow.Ticks);
+                }
+
                 Reject(openRejection);
                 return;
             }

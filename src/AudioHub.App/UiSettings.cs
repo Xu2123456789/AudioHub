@@ -20,6 +20,13 @@ internal sealed class UiSettings
     /// </summary>
     public bool QrIncludesPairingKey { get; set; } = true;
 
+    /// <summary>
+    /// 接收加密策略：None / Optional / Required，对应 <c>AudioHub.Core.Discovery.SecurityMode</c>。
+    /// 默认 Optional：加密和明文都收，这样没配对的旧手机仍能连，配对过的则会自动加密。
+    /// 取值在下次启动创建 host 时生效。
+    /// </summary>
+    public string AdvertisedSecurity { get; set; } = "Optional";
+
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "AudioHub",

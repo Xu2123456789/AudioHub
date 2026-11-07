@@ -33,7 +33,11 @@ import com.audiohub.protocol.DiscoveryClient
 import com.audiohub.protocol.QrPayload
 import com.audiohub.protocol.SecureEnvelope
 import com.audiohub.protocol.SecurityMode
+import com.audiohub.protocol.SendModeSituation
+import com.audiohub.protocol.SenderCredentials
 import com.audiohub.protocol.ShortCode
+import com.audiohub.protocol.resolveSendMode
+import com.audiohub.protocol.senderCredentialsFor
 import com.audiohub.vban.VbanPacketWriter
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
@@ -63,6 +67,7 @@ class MainActivity : Activity() {
     private lateinit var streamView: EditText
     private lateinit var keyView: EditText
     private lateinit var keyHintView: TextView
+    private lateinit var linkPlanView: TextView
     private lateinit var findButton: Button
     private lateinit var scanButton: Button
     private lateinit var codeButton: Button
@@ -98,8 +103,15 @@ class MainActivity : Activity() {
 
     private var searching = false
 
-    /** 这次发送要用的密钥；null 表示明文发送。 */
-    private var pendingPsk: ByteArray? = null
+    /**
+     * 这次发送真正要交给服务的两条 extra（电脑身份 + 密钥）。
+     *
+     * 这里刻意不存"密钥"再让发送处自己写 `if (psk != null && hubId != null)`：
+     * 那样"要不要加密"就多出第二处实现，而上一版正是丢在这里 ——
+     * 界面把结论说对了，发包动作却没读它，于是"界面说明文、线上跑密文"。
+     * 现在结论由 [senderCredentialsFor] 一处产出，发送处只负责原样传给服务。
+     */
+    private var pendingCredentials: SenderCredentials? = null
 
     private val refresher = object : Runnable {
         override fun run() {
@@ -170,7 +182,7 @@ class MainActivity : Activity() {
 
         scanButton = Button(this).apply {
             text = getString(R.string.button_scan_qr)
-            setOnClickListener { startPhotoScan() }
+            setOnClickListener { startScan() }
         }
         codeButton = Button(this).apply {
             text = getString(R.string.button_short_code)
@@ -245,6 +257,17 @@ class MainActivity : Activity() {
         }
         column.addView(keyView)
 
+        // 边输密钥边更新"链路"提示，不用等点开始才知道会不会加密。
+        keyView.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (::linkPlanView.isInitialized) {
+                    updateLinkPlan()
+                }
+            }
+            override fun afterTextChanged(s: android.text.Editable?) = Unit
+        })
+
         // 共享来源：决定系统授权弹窗里默认共享"整个屏幕"还是"单个应用"。
         // 这只是 Android 14 起"预填默认项"的提示，真正的授权确认仍需用户点。
         column.addView(label(getString(R.string.share_mode_label)))
@@ -265,6 +288,13 @@ class MainActivity : Activity() {
         val savedShare = prefs.getString(KEY_SHARE_MODE, SHARE_WHOLE)
         if (savedShare == SHARE_APP) appRadio.isChecked = true else wholeRadio.isChecked = true
         column.addView(shareModeGroup)
+
+        // 点"开始"之前就要说清这次会加密还是明文：等连上再看已经晚了。
+        linkPlanView = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, dp(10), 0, dp(4))
+        }
+        column.addView(linkPlanView)
 
         toggleButton = Button(this).apply {
             text = getString(R.string.button_start)
@@ -423,8 +453,7 @@ class MainActivity : Activity() {
     private fun selectPaired(pairing: PairedHubStore.Pairing) {
         clearTypedKeyIfTargetChanged(pairing.hubId)
         selectedHubId = pairing.hubId
-        val candidate = candidates.firstOrNull { it.hubId == pairing.hubId }
-        selectedSecurityMode = candidate?.securityMode ?: SecurityMode.OPTIONAL
+        selectedSecurityMode = advertisedModeFor(pairing.hubId)
         hostView.setText(pairing.host)
         portView.setText(pairing.port.toString())
         updateKeyVisibility()
@@ -456,6 +485,10 @@ class MainActivity : Activity() {
      * 每次开 App 都要人去电脑上翻密钥，等于没做。
      */
     private fun updateKeyVisibility() {
+        if (::linkPlanView.isInitialized) {
+            updateLinkPlan()
+        }
+
         val hubId = selectedHubId
         val remembered = hubId != null && pairings.keyFor(hubId) != null
 
@@ -487,7 +520,56 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 决定这次发送用不用加密、用哪把密钥，把结果放进 [pendingPsk]。
+     * 在点"开始"之前就说清这次会加密还是明文。
+     *
+     * 只按"对方要求 + 有没有密钥"给出说明；真正的判定仍只在 [preparePsk] 里，
+     * 这里刻意不复制那条判定 —— 同一个规则写在两处会各自演化（这个项目栽过四次）。
+     */
+    private fun updateLinkPlan() {
+        if (!::linkPlanView.isInitialized || !::hostView.isInitialized) {
+            return
+        }
+
+        val hubId = selectedHubId
+        val remembered = hubId != null && pairings.keyFor(hubId) != null
+        val typed = keyView.text.toString().trim().isNotEmpty()
+
+        if (hubId == null && hostView.text.toString().trim().isEmpty()) {
+            linkPlanView.text = "链路：请先选择电脑，或填地址 / 短码 / 扫码"
+            linkPlanView.setTextColor(0xFFA32D2D.toInt())
+            return
+        }
+
+        // 判定只有一处：[resolveSendMode]。这里只负责把结论翻成人话。
+        // 早先这里是四条 if，用的是"本机被重置后的模式"，于是电脑说"仅加密"、
+        // 而扫到的二维码里没密钥时，界面会显示"明文发送" —— 用户以为许可，实际发不响。
+        val plan = resolveSendMode(
+            advertised = advertisedModeOrNull(),
+            hasKey = remembered || typed,
+            hasIdentity = hubId != null,
+        )
+
+        val text: String = when (plan.situation) {
+            SendModeSituation.Encrypted ->
+                "链路：将加密发送（AES-256-GCM）"
+            SendModeSituation.MissingKey ->
+                "链路：此电脑要求加密，需先填密钥，否则发出去会被拒"
+            SendModeSituation.MissingIdentity ->
+                "链路：此电脑要求加密，但还不知道它是哪台电脑 —— 请从列表里选或扫码，才能加密"
+            SendModeSituation.PlaintextOnly ->
+                "链路：明文发送（这台电脑关闭了加密）"
+            SendModeSituation.PlaintextOptional ->
+                "链路：明文发送（此电脑支持加密，填密钥后改为加密）"
+            SendModeSituation.UnknownHub ->
+                "链路：明文发送（手填地址，未与电脑配对，无法加密）"
+        }
+
+        linkPlanView.text = text
+        linkPlanView.setTextColor(if (plan.encrypt) 0xFF1D9E75.toInt() else 0xFFA32D2D.toInt())
+    }
+
+    /**
+     * 决定这次发送用不用加密、用哪把密钥，把结论放进 [pendingCredentials]。
      *
      * 返回 false 表示**不能开始**，调用方必须直接返回。
      *
@@ -497,46 +579,98 @@ class MainActivity : Activity() {
      * 但用户这次手输了一个看不懂的密钥 —— 提示了一句"密钥看不懂"，
      * 然后**照样以明文开始发送**。在只收加密包的电脑上，那就是
      * 声音永远不来而双方都不报错。**报错和继续，只能选一个。**
+     *
+     * 所有出口都经过 [resolveSendMode]：这里不再有"提前 return 把判定绕过去"的分支。
+     * 上一版的三条 return 里只有最后一条问了判定，前两条拿着密钥就直接放行，
+     * 于是"电脑关掉加密"这条结论到了界面、却没到发送动作。
      */
     private fun preparePsk(): Boolean {
-        pendingPsk = null
+        pendingCredentials = null
 
-        // 手填地址、没走发现 → 不知道对方是谁，也没法按身份派生，只能明文。
-        val hubId = selectedHubId ?: return true
-
+        val hubId = selectedHubId
         val typed = keyView.text.toString().trim()
-        if (typed.isNotEmpty()) {
-            val parsed = SecureEnvelope.parse(typed)
-            if (parsed == null) {
+
+        // 先看手输的密钥看不看得懂。看不懂就停在这里 —— 报错和继续只能选一个。
+        val typedKey = if (typed.isEmpty()) {
+            null
+        } else {
+            SecureEnvelope.parse(typed) ?: run {
                 Toast.makeText(this, getString(R.string.error_bad_key), Toast.LENGTH_LONG).show()
                 return false
             }
-
-            val name = candidates.firstOrNull { it.hubId == hubId }?.name.orEmpty()
-            pairings.remember(hubId, parsed, name, hostView.text.toString().trim(), currentPort())
-            Toast.makeText(this, getString(R.string.paired_ok), Toast.LENGTH_SHORT).show()
-            pendingPsk = parsed
-            // 记住之后把输入框收起来，并把里面的明文清掉：
-            // 留着它会让界面和第 328 行那句"已记住，不用再填"自相矛盾，
-            // 也让一串密钥在屏幕上多挂一会儿。
-            keyView.setText("")
-            updateKeyVisibility()
-            return true
         }
 
-        pairings.keyFor(hubId)?.let {
-            pendingPsk = it
-            return true
-        }
+        // 手输的优先于记住的：用户这次填了，就是这次要用。
+        val usableKey = typedKey ?: if (hubId != null) pairings.keyFor(hubId) else null
 
-        // 没填也没存过：只有对方明确要求加密时才算问题。
-        // 明文模式（None）和"加密可选"（Optional）下不填是正常用法。
-        if (selectedSecurityMode == SecurityMode.REQUIRED) {
+        // 判定只有一处。界面文案、这里、以及最后塞进 Intent 的 extra，全都问它。
+        val plan = resolveSendMode(
+            advertised = advertisedModeOrNull(),
+            hasKey = usableKey != null,
+            hasIdentity = hubId != null,
+        )
+
+        if (!plan.canStart) {
             Toast.makeText(this, getString(R.string.error_key_needed), Toast.LENGTH_LONG).show()
             return false
         }
+
+        if (typedKey != null) {
+            if (hubId == null) {
+                // 手填地址 + 手输密钥：没有电脑身份就派生不出密钥，这次只能明文。
+                // 必须停下来明说，否则用户会以为"我填了密钥，所以是加密的" ——
+                // 那正是这套加密最该避免的错觉。
+                Toast.makeText(this, getString(R.string.error_key_without_identity), Toast.LENGTH_LONG).show()
+                return false
+            }
+
+            // 记住它，下次换到要求加密的电脑上不用再抄一遍。
+            // 注意：记住 ≠ 这次要用 —— 用不用由上面的 plan 决定。
+            val name = candidates.firstOrNull { it.hubId == hubId }?.name.orEmpty()
+            pairings.remember(hubId, typedKey, name, hostView.text.toString().trim(), currentPort())
+            Toast.makeText(this, getString(R.string.paired_ok), Toast.LENGTH_SHORT).show()
+
+            // 记住之后把输入框收起来，并把里面的明文清掉：
+            // 留着它会让界面和"已记住，不用再填"那句自相矛盾，
+            // 也让一串密钥在屏幕上多挂一会儿。
+            keyView.setText("")
+            updateKeyVisibility()
+        }
+
+        // 唯一的出口：明文就是两样都没有，加密就是两样都有。
+        pendingCredentials = senderCredentialsFor(plan, hubId?.toString(), usableKey)
         return true
     }
+
+    /**
+     * 电脑自己广播的安全模式；没听到过广播就按"加密可选"。
+     *
+     * 单独抽出来是为了守住一条纪律：[selectedSecurityMode] **只存电脑的原话**，
+     * 不允许被"扫到了什么 / 有没有密钥 / 短码查没查到"改写成别的值。
+     * 一旦改写，界面就会把"这台电脑要求加密"说成"明文发送" —— 用户看到的是许可，
+     * 实际结果是发出去全被拒。要不要加密由 [resolveSendMode] 一处判定。
+     */
+    private fun advertisedModeFor(hubId: UUID?): Int {
+        if (hubId == null) {
+            return SecurityMode.NONE
+        }
+
+        return candidates.firstOrNull { it.hubId == hubId }?.securityMode
+            ?: SecurityMode.OPTIONAL
+    }
+
+    /**
+     * "这台电脑要求什么"——**只有在知道是哪台电脑时才有答案**。
+     *
+     * [selectedSecurityMode] 可能残留上一台电脑的值（短码/手填地址拿不到身份，
+     * 换目标时又没清）。所以凡是要拿它做判定，都必须先过这一道：
+     * 没有身份就返回 null，也就是"不知道"，由 [resolveSendMode] 按"未听到广播"处理。
+     *
+     * 抽出来的理由和 [resolveSendMode] 一样：这个判断以前散在界面和发送准备两处，
+     * 只改一处就会让两边给出不同答案。
+     */
+    private fun advertisedModeOrNull(): Int? =
+        if (selectedHubId == null) null else selectedSecurityMode
 
     private fun currentPort(): Int =
         portView.text.toString().trim().toIntOrNull() ?: AudioCaptureService.DEFAULT_PORT
@@ -604,6 +738,19 @@ class MainActivity : Activity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            // 相机权限被拒不是死路：拍照识别不需要这个权限，那条路仍然可用。
+            // 所以这里不报错拦人，只说明一句然后退到退路上。
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                launchLiveScan()
+            } else {
+                Toast.makeText(this, getString(R.string.scan_need_camera), Toast.LENGTH_LONG).show()
+                startPhotoScan()
+            }
+            return
+        }
+
         if (requestCode != REQUEST_PERMISSIONS) {
             return
         }
@@ -660,6 +807,11 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
 
+        if (requestCode == REQUEST_SCAN_LIVE) {
+            onLiveScanResult(resultCode, data)
+            return
+        }
+
         if (requestCode == REQUEST_SCAN_PHOTO) {
             onPhotoScanResult(resultCode)
             return
@@ -689,11 +841,10 @@ class MainActivity : Activity() {
             return
         }
 
-        // 取成局部量：两个都要用，而它们是可变的成员属性，
-        // 后面在 apply 块（一个 lambda）里读会拿不到智能转换。
-        val psk = pendingPsk
-        val hubId = selectedHubId
-        pendingPsk = null
+        // 取成局部量：要放进下面的 lambda，而成员属性在 lambda 里拿不到智能转换。
+        // 这两条 extra 的**内容**已经在 preparePsk 里定好了，这里只负责原样传递。
+        val credentials = pendingCredentials ?: SenderCredentials(null, null)
+        pendingCredentials = null
 
         val intent = Intent(this, AudioCaptureService::class.java).apply {
             action = AudioCaptureService.ACTION_START
@@ -709,9 +860,14 @@ class MainActivity : Activity() {
             // 这里必须两个都传或都不传，不能只传身份。只传身份会被捕获线程判成
             // "参数不成立"并停止 —— 而"从列表里选了电脑、没输密钥"在
             // "加密可选"的电脑上是最普通的明文用法，本来就该能正常发。
-            // 早先这版正是这么写的（身份无条件传、密钥有才传），那条通路直接起不来。
-            if (psk != null && hubId != null) {
-                putExtra(AudioCaptureService.EXTRA_HUB_ID, hubId.toString())
+            //
+            // 读的是 [credentials]（[senderCredentialsFor] 的产物），不是
+            // pendingPsk / selectedHubId 这些原始状态 —— 读原始状态等于把
+            // "要不要加密"又判了第二遍，上一版正是这样与界面说的分了叉。
+            val hubIdText = credentials.hubIdText
+            val psk = credentials.psk
+            if (hubIdText != null && psk != null) {
+                putExtra(AudioCaptureService.EXTRA_HUB_ID, hubIdText)
                 putExtra(AudioCaptureService.EXTRA_PSK, psk)
             }
         }
@@ -724,12 +880,34 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ 扫码 / 短码
 
     /**
+     * 实时扫码：开着相机，认出来立刻填入。
+     *
+     * 权限只在这里问一次（进入扫码页时），不在启动应用时问 —— 一个只想填地址的用户
+     * 不该被要求交出相机。
+     */
+    private fun startScan() {
+        if (CaptureStatus.running) {
+            Toast.makeText(this, getString(R.string.stop_before_connecting), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            launchLiveScan()
+            return
+        }
+
+        requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA_PERMISSION)
+    }
+
+    private fun launchLiveScan() {
+        startActivityForResult(ScanActivity.intent(this), REQUEST_SCAN_LIVE)
+    }
+
+    /**
      * 用系统相机拍一张电脑屏幕，再在本地解码。
      *
-     * 为什么不做实时预览扫描：实时扫描要么自己用 Camera2 搭预览（两百多行，旋转、对焦、
-     * 各家 ROM 差异都在里面），要么引 zxing-android-embedded（会拖进 AndroidX / AppCompat，
-     * 而本项目一直不引 AndroidX）。拍一张静态照片只需要系统相机，**连 CAMERA 权限都不用申请**；
-     * 对着一张不动的二维码，可靠性和"多按一次快门"相比是划算的。
+     * 现在是**退路**：只有在用户拒绝相机权限、或设备没有可用相机时才走这里。
+     * 它不需要 CAMERA 权限（拍照由系统相机应用完成），所以这条路在任何情况下都还在。
      */
     private fun startPhotoScan() {
         if (CaptureStatus.running) {
@@ -782,6 +960,38 @@ class MainActivity : Activity() {
                 }
             }
         }.apply { isDaemon = true }.start()
+    }
+
+    /**
+     * 实时扫码页交回来的结果：只回传原始文本，解析仍只走 [ConnectionQr] 一处。
+     *
+     * 扫码页已经解析过一遍（用来判断"这不是 AudioHub 的码"）。这里再解析一次不是重复规则，
+     * 而是同一条规则的第二次调用；如果这里解析不出来，说明两处对同一串的理解不一致，
+     * 那种情况必须报错，不能静默当成功。
+     */
+    private fun onLiveScanResult(resultCode: Int, data: Intent?) {
+        if (resultCode == ScanActivity.RESULT_CAMERA_FAILED) {
+            // 相机打不开（被占用 / 没有可用相机）。这里必须真的接住：
+            // 否则用户点了扫码、只看到一句提示，然后什么都不会发生 ——
+            // 而 manifest 里写明"没有相机也能装"，那就必须留一条能走通的退路。
+            Toast.makeText(this, getString(R.string.scan_camera_failed), Toast.LENGTH_LONG).show()
+            startPhotoScan()
+            return
+        }
+
+        if (resultCode != RESULT_OK || data == null) {
+            // 用户主动取消，或扫码页因没权限自行退出。都不需要再说什么。
+            return
+        }
+
+        val text = data.getStringExtra(ScanActivity.EXTRA_QR_TEXT) ?: return
+        val payload = ConnectionQr.parse(text)
+        if (payload == null) {
+            Toast.makeText(this, getString(R.string.scan_not_audiohub), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        applyQrPayload(payload)
     }
 
     /** 解码一张照片。缩放上限 1600 px：再大只是浪费内存，对识别没有帮助。 */
@@ -838,7 +1048,10 @@ class MainActivity : Activity() {
         hostView.setText(payload.host)
         portView.setText(payload.port.toString())
         selectedHubId = hubId
-        selectedSecurityMode = if (psk != null) SecurityMode.REQUIRED else SecurityMode.NONE
+        // 这里以前是 `if (psk != null) REQUIRED else NONE`，等于**用"有没有密钥"覆盖电脑的原话**。
+        // 后果：电脑设「仅加密」、而扫到的码不带密钥时，本机模式被写成 NONE，
+        // 界面显示"明文发送"，用户点开始后每个包都被电脑拒掉，双方都不报错。
+        selectedSecurityMode = advertisedModeFor(hubId)
 
         if (hubId != null && psk != null) {
             pairings.remember(hubId, psk, payload.name.orEmpty(), payload.host, payload.port)
@@ -894,11 +1107,17 @@ class MainActivity : Activity() {
         val pairing = pairings.all().firstOrNull { it.host == address }
         if (pairing != null) {
             selectedHubId = pairing.hubId
-            selectedSecurityMode = SecurityMode.OPTIONAL
+            // 同样是"别用本机的猜测覆盖电脑的原话"：这里以前硬写 OPTIONAL，
+            // 于是电脑设「仅加密」时会显示成"此电脑支持加密"，而不是"要求加密"。
+            selectedSecurityMode = advertisedModeFor(pairing.hubId)
             Toast.makeText(this, getString(R.string.short_code_paired, address), Toast.LENGTH_SHORT).show()
         } else {
             selectedHubId = null
-            selectedSecurityMode = SecurityMode.NONE
+            // 这里**不要**再写 selectedSecurityMode = NONE。那个字段的语义是
+            // "电脑自己说的话"，而短码只给了个地址，关于加密它一个字都没说。
+            // 硬塞一个 NONE 进去，等于替电脑宣布"我关了加密"，将来任何一处
+            // 直接读它都会得出错误结论。没有身份时判定统一走
+            // advertisedModeOrNull() 的"不知道"，由 resolveSendMode 按未听到广播处理。
             Toast.makeText(this, getString(R.string.short_code_no_pairing, address), Toast.LENGTH_LONG).show()
         }
 
@@ -933,6 +1152,17 @@ class MainActivity : Activity() {
         statusView.text = CaptureStatus.describe()
 
         val running = CaptureStatus.running
+
+        // 运行中用真实结果覆盖"将要如何"，不用让用户去状态大段里找。
+        if (::linkPlanView.isInitialized) {
+            if (running) {
+                val encrypted = CaptureStatus.encrypted
+                linkPlanView.text = if (encrypted) "链路：加密发送中（AES-256-GCM）" else "链路：明文发送中（未加密）"
+                linkPlanView.setTextColor(if (encrypted) 0xFF1D9E75.toInt() else 0xFFA32D2D.toInt())
+            } else {
+                updateLinkPlan()
+            }
+        }
         toggleButton.text = getString(if (running) R.string.button_stop else R.string.button_start)
 
         // 运行中锁住目标，避免界面显示的地址和实际在用的一致不了。
@@ -998,6 +1228,8 @@ class MainActivity : Activity() {
         private const val REQUEST_PERMISSIONS = 1001
         private const val REQUEST_PROJECTION = 1002
         private const val REQUEST_SCAN_PHOTO = 1003
+        private const val REQUEST_SCAN_LIVE = 1004
+        private const val REQUEST_CAMERA_PERMISSION = 1005
         private const val REFRESH_INTERVAL_MILLIS = 500L
     }
 }

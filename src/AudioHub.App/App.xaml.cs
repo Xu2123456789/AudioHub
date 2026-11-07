@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows;
+using AudioHub.Core.Discovery;
 using AudioHub.Hosting;
 using AudioHub.Web;
 using Forms = System.Windows.Forms;
@@ -48,7 +49,14 @@ public partial class App : Application
             // That leaves the phone as the only thing AudioHub actually contributes, so the
             // transport has to be on for the tray app to do anything at all. It used to default
             // to None, which made the tray app a graph with no sources in it.
-            _host = new WindowsAudioHubHost(AudioHubOptions.Default with { Transport = TransportKind.Vban });
+            UiSettings settings = UiSettings.Load();
+            SecurityMode advertised = SecurityModeNames.Parse(settings.AdvertisedSecurity);
+
+            _host = new WindowsAudioHubHost(AudioHubOptions.Default with
+            {
+                Transport = TransportKind.Vban,
+                AdvertisedSecurity = advertised,
+            });
             await _host.StartAsync().ConfigureAwait(true);
 
             _web = new WebConsole(_host);

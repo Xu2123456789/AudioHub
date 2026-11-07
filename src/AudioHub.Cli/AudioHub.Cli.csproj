@@ -9,8 +9,9 @@
     <RootNamespace>AudioHub.Cli</RootNamespace>
     <!-- 1.0.0: first version that actually sounds right on a real phone. See CHANGELOG.md.
          2.1.0: manual connection (short code / QR). Kept in step with the Android versionName,
-         because "两端版本不一致" is one of the first things to check when audio does not arrive. -->
-    <Version>2.1.0</Version>
+         because "两端版本不一致" is one of the first things to check when audio does not arrive.
+         2.2.0: phone scans QR live (CameraX); tray shows why plaintext packets were refused. -->
+    <Version>2.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

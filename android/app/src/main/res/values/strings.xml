@@ -17,9 +17,10 @@
     <string name="no_hub_found">没找到电脑。确认电脑上的 AudioHub 正在运行，且手机和它在同一个 Wi-Fi 下。</string>
     <string name="hubs_found">找到 %1$d 台电脑，点一台即可</string>
 
-    <string name="hub_requires_key">这台电脑要求加密发送。请在电脑上运行 dist\\show-key.bat（或看启动时的输出），把显示的密钥填进来。</string>
-    <string name="hub_accepts_key">这台电脑支持加密发送。填了密钥就更安全；不填也能连，只是明文。</string>
+    <string name="hub_requires_key">这台电脑要求加密发送。请在电脑端 AudioHub 窗口的「手动连接」里，点「配对密钥」旁的「显示」取得密钥；命令行用户也可运行 dist\\show-key.bat（或看启动时的输出），把显示的密钥填进来。</string>
+    <string name="hub_accepts_key">这台电脑支持加密发送。填了密钥就加密；不填也能连，但会是明文（不加密）。</string>
     <string name="error_key_needed">这台电脑要求加密，请先填写密钥</string>
+    <string name="error_key_without_identity">填了密钥，但还不知道对方是哪台电脑 —— 派生密钥要用电脑身份，所以这次加密不了。请从上面的列表里选那台电脑，或扫一次它的二维码；只想明文发送就清空密钥框。</string>
     <string name="error_bad_key">密钥看不懂：只认 0-9 和字母（不含 I L O U），可以带或不带短横线</string>
     <string name="paired_ok">已记住这台电脑，以后不用再输密钥</string>
 
@@ -43,12 +44,20 @@
     <string name="short_code_ok">连接</string>
     <string name="short_code_failed">短码不对（抄错一位就对不上），请对着电脑屏幕再核一遍</string>
     <string name="short_code_paired">已填入 %1$s（这台配过对，可直接开始）</string>
-    <string name="short_code_no_pairing">已填入 %1$s；这台还没配对，若电脑要求加密请先用二维码配对</string>
+    <string name="short_code_no_pairing">已填入 %1$s；这台还没配对，本次只能明文发送。要加密请先扫码配对。</string>
 
     <string name="scan_failed">没认出二维码。请对准电脑上的二维码、拍清楚一点再试</string>
     <string name="qr_applied">已读取电脑信息：%1$s，点开始发送即可</string>
-    <string name="qr_address_only">已填入地址；这张二维码不含密钥，首次配对还需输入密钥</string>
+    <string name="qr_address_only">已填入地址；这张二维码不含密钥。要加密，请到电脑端「手动连接 → 配对密钥」抄下那串码填入，或让电脑端勾上「二维码包含配对密钥」后重新扫码。</string>
     <string name="qr_missing_identity">这张二维码缺少电脑身份，无法记住密钥。请改用“查找电脑”或短码</string>
     <string name="camera_missing">没有找到可用的相机应用，无法拍照扫码</string>
     <string name="stop_before_connecting">先停止发送，再改连接方式</string>
+
+    <!-- 实时扫码 -->
+    <string name="scan_live_title">扫二维码连接</string>
+    <string name="scan_live_hint">把电脑屏幕上的二维码放进取景框</string>
+    <string name="scan_live_cancel">取消</string>
+    <string name="scan_not_audiohub">这是一个二维码，但不是 AudioHub 的。请扫电脑端「手动连接」里显示的那张</string>
+    <string name="scan_camera_failed">相机打不开（可能被其他应用占用，或这台设备没有可用相机）。已改为拍照识别；也可以手填地址或短码连接</string>
+    <string name="scan_need_camera">没给相机权限，改为拍照识别。想实时扫描请到系统设置里允许「相机」权限</string>
 </resources>

@@ -17,6 +17,18 @@
     <!-- 熄屏时不要让 CPU 睡下去，否则捕获会断流 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- 实时扫码要开相机。运行时申请，只在进扫码页时问一次。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- required=false：没有相机的设备也能装，只是不能用扫码（还能手填地址/短码）。
+         第二行不是重复：声明 CAMERA 权限会让系统隐式要求 android.hardware.camera，
+         不显式覆盖的话，无相机设备会被判定为不兼容。 -->
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <!-- 应用内更新：从 GitHub 下载新 APK 后唤起系统安装器（Android 8 起装未知来源要先授权） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -38,6 +50,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 实时扫码页。竖屏锁死：旋屏会重建 Activity，相机会重绑一次，没必要。 -->
+        <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:label="@string/scan_live_title"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
 
         <!-- 捕获服务。exported=false：只有本应用能启动它。 -->
         <service

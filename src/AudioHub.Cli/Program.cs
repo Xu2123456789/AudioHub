@@ -131,7 +131,9 @@ static async Task<int> RunSecureProbeAsync(string[] args)
     // A plain VBAN packet under required mode answers "is the door actually locked", which a
     // successful decrypt alone cannot: that would also pass if encryption were silently ignored.
     int plain = await SendAndCount(audio);
+    long countedAsUnencrypted = transport.Stats.PacketsRejectedUnencrypted;
     Console.WriteLine($"5. 发送同一个包的明文版本 → 接受 {plain} 个（强制模式下必须是 0）");
+    Console.WriteLine($"   其中记为「未加密被拒」{countedAsUnencrypted} 个（托盘窗口就是靠这个数字提示手机没密钥）");
 
     byte[] tampered = (byte[])sealedPacket.Clone();
     tampered[^1] ^= 0xFF;
@@ -159,19 +161,22 @@ static async Task<int> RunSecureProbeAsync(string[] args)
     Console.WriteLine($"   平均每包 {microseconds:F2} 微秒（48 kHz 下一个包是 5.3 毫秒的音频，占比 {(microseconds / 1000 / 5.33 * 100):F4}%）");
     Console.WriteLine();
 
-    bool pass = good == 1 && plain == 0 && broken == 0 && wrongKey == 0;
+    bool pass = good == 1 && plain == 0 && broken == 0 && wrongKey == 0
+        && countedAsUnencrypted == 1;
 
     if (!pass)
     {
         Console.WriteLine("FAIL: 上面有哪一项不是预期的值。");
         Console.WriteLine($"     合法={good}(期望1) 明文={plain}(期望0) 篡改={broken}(期望0) 错密钥={wrongKey}(期望0)");
+        Console.WriteLine($"     未加密被拒={countedAsUnencrypted}(期望1，篡改包和错密钥都不该算进来)");
         return 1;
     }
 
     Console.WriteLine("PASS: 加密包能解开、明文/篡改/错密钥全部被拒。");
     Console.WriteLine();
-    Console.WriteLine("注意：这只证明电脑端自己封得开、认得出。手机端还没实现加密，");
-    Console.WriteLine("真正「手机发加密包 → 电脑收到」要等手机端做完再验一次。");
+    Console.WriteLine("边界：这条命令证明的是电脑端这一侧。手机端的加解密由 Kotlin 独立实现，");
+    Console.WriteLine("两端算得对不对，由两端各自断言同一组黄金值来钉（见 tests/ 与 android/protocol 的单测）。");
+    Console.WriteLine("真正「手机发加密包 → 电脑收到声音」仍要在真机上跑一次。");
     return 0;
 }
 

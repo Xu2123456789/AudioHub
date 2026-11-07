@@ -9,6 +9,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using AudioHub.Core;
 using AudioHub.Core.Connection;
+using AudioHub.Core.Discovery;
 using AudioHub.Hosting;
 using AudioHub.Platform.Windows;
 using QRCoder;
@@ -29,6 +30,12 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _timer;
     private readonly Dictionary<string, ProgressBar> _meters = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// How recently an unencrypted packet must have been refused for the count to still be worth
+    /// reporting. Past this window the refusals are history, not a diagnosis.
+    /// </summary>
+    private static readonly TimeSpan RejectionHintWindow = TimeSpan.FromSeconds(10);
+
     /// <summary>When the graph last started running, so "no packets yet" can say for how long.</summary>
     private DateTimeOffset? _runningSince;
 
@@ -44,6 +51,9 @@ public partial class MainWindow : Window
     /// would be indistinguishable from the user opening it, and auto-collapse would never run.
     /// </summary>
     private bool _suppressPanelEvents;
+
+    /// <summary>Set while the code sets the security dropdown itself, so the handler ignores it.</summary>
+    private bool _suppressSecurityEvent;
 
     /// <summary>True once the user opened or closed the panel by hand; stops all automation.</summary>
     private bool _userTouchedPanel;
@@ -81,6 +91,12 @@ public partial class MainWindow : Window
         _suppressPanelEvents = true;
         QrIncludeKeyCheck.IsChecked = _settings.QrIncludesPairingKey;
         _suppressPanelEvents = false;
+
+        // 接收加密策略：以保存的值为准，不当作一次用户操作。
+        _suppressSecurityEvent = true;
+        SecurityModeCombo.SelectedIndex =
+            SecurityIndexFor(SecurityModeNames.Parse(_settings.AdvertisedSecurity));
+        _suppressSecurityEvent = false;
 
         RefreshConnectionInfo();
 
@@ -198,6 +214,8 @@ public partial class MainWindow : Window
             ? $"运行中 · {_host.Mixer.Format.SampleRate} Hz · {_host.Mixer.Format.Channels} 声道 · {_host.Mixer.ChannelIds.Count} 路音源"
             : "已停止";
 
+        RefreshSecurityNote();
+
         // Shown rather than left implicit, because a limit nobody can see is a limit nobody
         // knows they have. Most people run the tray, not the console, so putting this only on
         // the CLI would leave the common case uninformed.
@@ -239,10 +257,41 @@ public partial class MainWindow : Window
             return ("网络：未启用音源传输。", false);
         }
 
+        // Whether this is happening *now*, not whether it ever happened. The count is cumulative
+        // and never falls, so a phone that was refused once and then paired would otherwise keep
+        // producing the warning below for the rest of the session — and then bury the next real
+        // problem behind a message the user has already fixed.
+        bool rejectionsRecent = stats.LastRejectedUnencryptedUtc is { } rejectedAt &&
+            DateTimeOffset.UtcNow - rejectedAt <= RejectionHintWindow;
+
+        // A phone without the key sends fine; every packet is refused here. Counting those is the
+        // difference between "your firewall is blocking it" and "this phone has no key yet", and
+        // the two need opposite actions. Without this branch the zero-accepted path below tells
+        // the user to go and check the network, which is the wrong thing to do about a key.
+        if (stats.PacketsAccepted == 0 && rejectionsRecent)
+        {
+            return ($"网络：手机正在发，但被拒了 {stats.PacketsRejectedUnencrypted} 个包 —— "
+                    + "这台电脑设的是「仅加密」，而这台手机还没配密钥。\n"
+                    + "  在手机上填一次配对密钥就好：电脑这扇窗口「手动连接 → 配对密钥 → 显示」，"
+                    + "或跑 dist\\show-key.bat。\n"
+                    + "  （不想用加密，就把上面「接收加密」改成「关闭加密」。）", true);
+        }
+
         if (stats.PacketsAccepted > 0)
         {
+            string crypto = _host.SecurityMode == SecurityMode.None
+                ? " · 加密已关闭"
+                : $" · 解密 {_host.PacketsDecrypted ?? 0} 个";
+
+            // Two phones, one paired and one not, is a real setup: the paired one plays while the
+            // unpaired one is silently dropped. Say so rather than letting one work and the other
+            // vanish for no stated reason — but only while it is still true.
+            string strays = rejectionsRecent
+                ? $" · 另有 {stats.PacketsRejectedUnencrypted} 个未加密包被拒（有设备还没配密钥）"
+                : string.Empty;
+
             return ($"网络：已收到 {stats.PacketsAccepted} 个包 · 拒绝 {stats.PacketsRejected}"
-                    + $" · 丢失 {stats.FramesLost} 帧", false);
+                    + crypto + $" · 丢失 {stats.FramesLost} 帧" + strays, false);
         }
 
         int waited = _runningSince is { } since
@@ -460,6 +509,62 @@ public partial class MainWindow : Window
             RegenerateQr();
         }
     }
+
+    private void SecurityMode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressSecurityEvent)
+        {
+            return;
+        }
+
+        if (SecurityModeCombo.SelectedItem is not ComboBoxItem item)
+        {
+            return;
+        }
+
+        // Normalise through the one parser so the settings file can never drift to a
+        // spelling that the loader would read as a different mode.
+        _settings.AdvertisedSecurity =
+            SecurityModeNames.ToName(SecurityModeNames.Parse(item.Tag as string));
+        _settings.Save();
+        RefreshSecurityNote();
+    }
+
+    /// <summary>
+    /// Says whether the dropdown matches what the running host is actually doing. A saved
+    /// setting that still needs a restart must not look like it is already in force.
+    /// </summary>
+    private void RefreshSecurityNote()
+    {
+        if (SecurityModeCombo.SelectedItem is not ComboBoxItem item)
+        {
+            SecurityModeNote.Text = string.Empty;
+            return;
+        }
+
+        SecurityMode saved = SecurityModeNames.Parse(item.Tag as string);
+        if (saved == _host.SecurityMode)
+        {
+            SecurityModeNote.Text = "当前生效";
+            SecurityModeNote.Foreground = new SolidColorBrush(Color.FromRgb(0x1D, 0x9E, 0x75));
+        }
+        else
+        {
+            SecurityModeNote.Text = "已保存，重启 AudioHub 后生效";
+            SecurityModeNote.Foreground = new SolidColorBrush(Color.FromRgb(0xA3, 0x2D, 0x2D));
+        }
+    }
+
+    /// <summary>
+    /// ComboBox order is 自动 / 仅加密 / 关闭加密, so the index mapping lives here and nowhere
+    /// else — the XAML must list the items in that order.
+    /// </summary>
+    private static int SecurityIndexFor(SecurityMode mode) => mode switch
+    {
+        SecurityMode.Required => 1,
+        SecurityMode.None => 2,
+        _ => 0,
+    };
 
     /// <summary>
     /// Expands the panel after 15 seconds without a single packet, and retracts it three seconds

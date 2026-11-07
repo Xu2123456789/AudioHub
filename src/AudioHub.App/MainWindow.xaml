@@ -14,6 +14,18 @@
 <TextBlock x:Name="CeilingText" FontSize="12" Margin="0,0,0,14"
            TextWrapping="Wrap" Foreground="Gray" />
 
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                <TextBlock Text="接收加密" FontSize="12" Foreground="Gray" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox x:Name="SecurityModeCombo" Width="200" VerticalAlignment="Center"
+                          SelectionChanged="SecurityMode_Changed">
+                    <ComboBoxItem Content="自动（加密/明文都收）" Tag="Optional" />
+                    <ComboBoxItem Content="仅加密（拒绝明文）" Tag="Required" />
+                    <ComboBoxItem Content="关闭加密（只收明文）" Tag="None" />
+                </ComboBox>
+                <TextBlock x:Name="SecurityModeNote" FontSize="11" Foreground="Gray"
+                           VerticalAlignment="Center" Margin="8,0,0,0" TextWrapping="Wrap" />
+            </StackPanel>
+
             <Expander x:Name="ManualExpander" IsExpanded="False" Margin="0,0,0,14"
                       Expanded="ManualExpander_Expanded" Collapsed="ManualExpander_Collapsed">
                 <Expander.Header>

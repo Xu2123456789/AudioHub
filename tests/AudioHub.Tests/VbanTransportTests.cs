@@ -325,6 +325,89 @@ public sealed class VbanTransportTests
         Assert.Equal(0, transport.PacketsDecrypted);
     }
 
+    [Fact]
+    public async Task RequiredModeRejectsPlainPackets()
+    {
+        // "仅加密" is what makes the hub something other than plaintext-only. If a packet that is
+        // not sealed still got through, the setting would mean nothing.
+        int port = FreePort();
+        var envelope = new AesGcmEnvelope(new byte[32], salt: 1);
+        await using var transport = new VbanTransport(port, envelope: envelope, requireEncryption: true);
+
+        int callbacks = 0;
+        transport.PacketReceived += (_, _) => Interlocked.Increment(ref callbacks);
+
+        await transport.StartAsync();
+        await SendAsync(port, frameCounter: 0, channels: 2, dataType: VbanDataType.Int16);
+
+        await WaitUntilAsync(() => transport.Stats.PacketsRejected > 0);
+
+        Assert.Equal(0, transport.Stats.PacketsAccepted);
+        Assert.Equal(0, callbacks);
+        Assert.NotNull(transport.Stats.LastRejectionReason);
+
+        // This is the count the tray window shows as "因未加密被拒", and it exists because a plain
+        // phone is the one rejection the user can fix. A wrong key must not land here, or the
+        // advice it produces would be wrong.
+        Assert.Equal(1, transport.Stats.PacketsRejectedUnencrypted);
+
+        // The count never falls, so on its own it cannot tell "a phone is being refused right now"
+        // from "a phone was refused twenty minutes ago and has since been paired". The timestamp is
+        // what the window reads to stop warning about something the user already fixed; without it
+        // the advice turns into permanent noise and hides the next real problem.
+        DateTimeOffset? rejectedAt = transport.Stats.LastRejectedUnencryptedUtc;
+        Assert.NotNull(rejectedAt);
+        Assert.True(
+            DateTimeOffset.UtcNow - rejectedAt!.Value < TimeSpan.FromMinutes(1),
+            "时间戳应当刚被写入，否则界面无法判断'现在还在发生'");
+    }
+
+    [Fact]
+    public async Task AWrongKeyIsNotReportedAsAnUnencryptedPhone()
+    {
+        // Sealed with a different key: it is unmistakably protected, so it is a wrong key and not
+        // a phone that has yet to be paired. Telling the user to pair would be the wrong advice.
+        int port = FreePort();
+        var receiver = new AesGcmEnvelope(new byte[32], salt: 1);
+        var stranger = new AesGcmEnvelope(Enumerable.Repeat((byte)0x7F, 32).ToArray(), salt: 1);
+        await using var transport = new VbanTransport(port, envelope: receiver, requireEncryption: true);
+
+        await transport.StartAsync();
+
+        await SendAsync(
+            port,
+            frameCounter: 0,
+            channels: 2,
+            dataType: VbanDataType.Int16,
+            sealWith: stranger);
+        await WaitUntilAsync(() => transport.Stats.PacketsRejected > 0);
+
+        Assert.Equal(0, transport.Stats.PacketsAccepted);
+        Assert.Equal(0, transport.Stats.PacketsRejectedUnencrypted);
+    }
+
+    [Fact]
+    public async Task PlaintextOnlyModeRejectsSealedPackets()
+    {
+        // "关闭加密" must not quietly decrypt. With no envelope configured a sealed packet has no
+        // valid VBAN header to fall back on, so it is refused rather than played as noise.
+        int port = FreePort();
+        await using var transport = new VbanTransport(port); // no envelope = None
+
+        int callbacks = 0;
+        transport.PacketReceived += (_, _) => Interlocked.Increment(ref callbacks);
+
+        await transport.StartAsync();
+        await SendAsync(
+            port, frameCounter: 0, channels: 2, dataType: VbanDataType.Int16,
+            sealWith: new AesGcmEnvelope(new byte[32], salt: 2));
+
+        await WaitUntilAsync(() => transport.Stats.PacketsRejected > 0);
+
+        Assert.Equal(0, transport.Stats.PacketsAccepted);
+        Assert.Equal(0, callbacks);
+    }
+
     private static async Task SendAsync(
         int port,
         uint frameCounter,
