@@ -30,7 +30,8 @@ import kotlin.system.exitProcess
  *   simulate-sender.bat --silent
  *   simulate-sender.bat --key=<配对钥匙> --hub=<电脑身份 UUID>
  *
- * 想边发边看收包情况，另开一个窗口跑 `dist\probe-vban.bat`。
+ * 想边发边看收包情况，另开一个窗口跑 `dist\AudioHub.Cli.exe --vban --seconds 90`
+ * （或双击 `dist\audiohub-verify.bat`，它会试收 90 秒）。
  */
 fun main(args: Array<String>) {
     if (args.contains("--discover")) {
@@ -353,10 +354,10 @@ private class Options(
                   --discover        冒充手机做一次发现，列出回答的电脑后退出
                   --key=XXXXX       配对密钥，给了就发加密包
                   --hub=UUID        电脑身份，和 --key 一起用；电脑上用
-                                    dist\\show-key.bat 能看到身份
+                                    AudioHub.Cli.exe --show-key 能打印身份
                   -h, --help        显示这段说明
 
-                配 probe-vban.bat 一起用：另开一个窗口先跑它，再跑这个。
+                配 VBAN 接收端一起用：另开一个窗口先启动它，再跑这个。
 
                 加密要跑通，电脑上必须是 --secure=on 或 --secure=auto 启动。
                 """.trimIndent(),

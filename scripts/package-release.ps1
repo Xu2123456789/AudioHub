@@ -129,6 +129,10 @@ foreach ($t in $targets) {
 
 # ---------------------------------------------------------------- 安卓包
 
+# 本脚本不负责构建安卓端（那是 android\build-apk.bat 的事），只把已构建好的 debug APK
+# 归档到 publish\。危险在于：app-debug.apk 可能是上一版留下的旧包，这里却按
+# build.gradle.kts 的新版本号命名 —— 名字对、内容旧，而且全程零报错。
+# 所以归档前用 aapt2 读出 APK 里真正的 versionName，与源码版本号对一次。
 $apk = Join-Path $root 'android\app\build\outputs\apk\debug\app-debug.apk'
 if (Test-Path $apk) {
     $gradle = Join-Path $root 'android\app\build.gradle.kts'
@@ -137,6 +141,31 @@ if (Test-Path $apk) {
         $m = Select-String -Path $gradle -Pattern 'versionName\s*=\s*"([^"]+)"' | Select-Object -First 1
         if ($m) { $version = $m.Matches[0].Groups[1].Value }
     }
+
+    $aapt2 = $null
+    $sdk = $env:ANDROID_HOME
+    if (-not $sdk) { $sdk = 'D:\app\Android\Android-SDK' }
+    $bt = Join-Path $sdk 'build-tools'
+    if (Test-Path $bt) {
+        $candidate = Get-ChildItem -Path $bt -Directory | Sort-Object Name -Descending | Select-Object -First 1
+        if ($candidate) {
+            $probe = Join-Path $candidate.FullName 'aapt2.exe'
+            if (Test-Path $probe) { $aapt2 = $probe }
+        }
+    }
+
+    if ($aapt2) {
+        $badging = (& $aapt2 dump badging $apk 2>&1) | Out-String
+        $n = [regex]::Match($badging, "versionName='([^']+)'")
+        if (-not $n.Success) { throw "读不出 APK 的 versionName：$apk" }
+        if ($n.Groups[1].Value -ne $version) {
+            throw "APK 是旧版本：包里是 $($n.Groups[1].Value)，源码里是 $version。请先跑 android\build-apk.bat 重新出包，再执行本脚本。"
+        }
+        Write-Host "     APK 版本核对：$($n.Groups[1].Value) = 源码 $version" -ForegroundColor DarkGray
+    } else {
+        Write-Host '     警告：找不到 aapt2，无法核对 APK 版本。请确认已先跑过 android\build-apk.bat。' -ForegroundColor Yellow
+    }
+
     $apkOut = Join-Path $publishDir "AudioHub-Sender-$version.apk"
     Copy-Item $apk $apkOut -Force
     Write-Host "==> 安卓包 -> $(Split-Path -Leaf $apkOut)" -ForegroundColor Cyan

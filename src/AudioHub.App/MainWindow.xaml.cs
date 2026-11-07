@@ -284,7 +284,7 @@ public partial class MainWindow : Window
             return ($"网络：手机正在发，但被拒了 {stats.PacketsRejectedUnencrypted} 个包 —— "
                     + "这台电脑设的是「仅加密」，而这台手机还没配密钥。\n"
                     + "  在手机上填一次配对密钥就好：电脑这扇窗口「手动连接 → 配对密钥 → 显示」，"
-                    + "或跑 dist\\show-key.bat。\n"
+                    + "或用命令行 AudioHub.Cli.exe --show-key 打印同一把密钥。\n"
                     + "  （不想用加密，就把上面「接收加密」改成「关闭加密」。）", true);
         }
 

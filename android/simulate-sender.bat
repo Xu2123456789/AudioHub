@@ -5,10 +5,13 @@ rem Why it exists: before any phone is involved, this is how you find out whethe
 rem PC side of the link works. It uses the exact same encoder and sender the phone app
 rem uses, so a pass here means the bytes the phone will send are bytes this PC accepts.
 rem
-rem How to use:
-rem   1. Open another window and run dist\probe-vban.bat
+rem How to use (paths below are relative to the repo root, not this android\ folder):
+rem   1. In another window start a VBAN listener, e.g.
+rem        dist\AudioHub.Cli.exe --vban --seconds 90
+rem      or just double-click dist\audiohub-verify.bat (it listens for 90 s).
+rem      There is no probe-vban.bat any more; the CLI does it directly.
 rem   2. Double-click this file
-rem   probe-vban should report accepted packets well above zero.
+rem   The listener should report accepted packets well above zero.
 rem
 rem Extra options go straight through, e.g.:
 rem   simulate-sender.bat --seconds=60

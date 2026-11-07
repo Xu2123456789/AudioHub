@@ -46,12 +46,14 @@
     <!-- 应用内更新：从 GitHub 下载新 APK 后唤起系统安装器（Android 8 起装未知来源要先授权） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- 备份全关：allowBackup="false" 已经禁用了备份与恢复，配对密钥不会随换机迁出。
-         2.3.2 曾再加一条 android:dataExtractionRules 做双保险，但该属性在 Android 12+
-         已被标为 deprecated，lint 会提示。2.3.4 定位闪退时把它撤掉后没有再恢复，
-         现在按"只留一个真正生效的开关"处理，代价是 lint 留一条 DataExtractionRules 提示。 -->
+    <!-- 备份全关：allowBackup="false" + dataExtractionRules 排除所有域，配对密钥不随换机迁出。
+         Android 12+ 把 allowBackup 标为 deprecated（lint 的 DataExtractionRules 提示），
+         所以补上 data_extraction_rules.xml，把云备份与设备迁移的每个域都排除，
+         让 lint 归零、行为仍是"什么都不备份"。 -->
     <application
         android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
@@ -62,11 +64,11 @@
              和我们自己画的卡片式界面完全两套语言。标题改由界面自己画（带图标 + 副标题）。 -->
         <!-- 竖屏锁死不跟随旋屏：这是"发送端遥控面板"，横过来只会把卡片拉成长条。
              Lint 的 DiscouragedApi/LockedOrientationActivity 是针对平板/折叠屏的通用提醒，
-             本项目手机定屏是有意的取舍，这里显式抑制并留下理由。 -->
+             本项目手机定屏是有意的取舍，这里显式抑制并留下理由。
+             不写 android:label：它与 application 上的同名，lint 会报 RedundantLabel。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:screenOrientation="portrait"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             tools:ignore="DiscouragedApi,LockedOrientationActivity">

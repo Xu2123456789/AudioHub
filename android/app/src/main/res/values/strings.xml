@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">AudioHub Sender</string>
     <!-- 界面抬头用短名：完整名 "AudioHub Sender" 在 22sp 下会顶到图标。
          "Sender" 由副标题承担说明，抬头保持品牌名。 -->
@@ -32,7 +32,8 @@
     <string name="no_hub_found">没找到电脑。确认电脑上的 AudioHub 正在运行，且手机和它在同一个 Wi-Fi 下。</string>
     <string name="hubs_found">找到 %1$d 台电脑，点一台即可</string>
 
-    <string name="hub_requires_key">这台电脑要求加密发送。请在电脑端 AudioHub 窗口的「手动连接」里，点「配对密钥」旁的「显示」取得密钥；命令行用户也可运行 dist\\show-key.bat（或看启动时的输出），把显示的密钥填进来。</string>
+    <!-- tools:ignore=TypographyDashes：下面那串 CLI 参数以两个连字符开头，必须原样保留，不能换成破折号 -->
+    <string name="hub_requires_key" tools:ignore="TypographyDashes">这台电脑要求加密发送。请在电脑端 AudioHub 窗口里展开「手动连接」，点「配对密钥」右边的「显示」，把那串码填进来。用命令行启动的话，AudioHub.Cli.exe --show-key 会打印同一把密钥。</string>
     <string name="hub_accepts_key">这台电脑支持加密发送。填了密钥就加密；不填也能连，但会是明文（不加密）。</string>
     <string name="error_key_needed">这台电脑要求加密，请先填写密钥</string>
     <string name="error_key_without_identity">填了密钥，但还不知道对方是哪台电脑 —— 派生密钥要用电脑身份，所以这次加密不了。请从上面的列表里选那台电脑，或扫一次它的二维码；只想明文发送就清空密钥框。</string>

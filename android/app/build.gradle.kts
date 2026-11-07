@@ -44,8 +44,11 @@ android {
         //         与 activity label 的改动。用来判定崩溃是不是清单资源引起的。
         // 2.3.5 = 修掉真正的崩溃：window.insetsController 在 setContentView 之前访问，
         //         PhoneWindow.getInsetsController() 内部解引用 mDecor（还 null）→ NPE。
-        versionCode = 10
-        versionName = "2.3.5"
+        // 2.3.6 = 发布前复查收尾：确认根因在 insetsController 之后，把 2.3.3 撤回的
+        //         mipmap-anydpi 改名与 dataExtractionRules 恢复回来（lint 归零），
+        //         并改掉 hub_requires_key 里指向不存在文件 show-key.bat 的错误指引。
+        versionCode = 11
+        versionName = "2.3.6"
     }
 
     buildTypes {

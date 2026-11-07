@@ -526,7 +526,7 @@ static async Task<int> RunDiscoveryProbeAsync(string[] args)
     Console.WriteLine("=== AudioHub discovery probe ===");
     Console.WriteLine();
     Console.WriteLine("扮演手机：向本网段广播一次「有 AudioHub 吗」，然后等回答。");
-    Console.WriteLine("请在另一台机器上运行 start-vban.bat，或者本机已经有实例在跑。");
+    Console.WriteLine("请先启动 AudioHub 托盘程序（按 Win 搜 AudioHub 回车，或双击 start-audiohub.bat），或者本机已经有实例在跑。");
     Console.WriteLine();
 
     List<(DiscoveryMessage Message, IPEndPoint From)> answers = [];
@@ -629,7 +629,7 @@ static async Task<int> RunDiscoveryProbeAsync(string[] args)
     {
         Console.WriteLine("FAIL: 没有任何 AudioHub 回答。通常是这三件事之一：");
         Console.WriteLine();
-        Console.WriteLine("  1  这台机器上没跑 AudioHub（另开一个窗口跑 start-vban.bat）");
+        Console.WriteLine("  1  这台机器上没跑 AudioHub（双击 start-audiohub.bat 启动托盘程序）");
         Console.WriteLine("  2  UDP 6979 被防火墙挡住了 —— 跑一次 dist\\allow-firewall.bat");
         Console.WriteLine("  3  这个网络不允许广播（校园网 / 公共 WiFi 常见）");
         Console.WriteLine();
@@ -752,8 +752,8 @@ static async Task<int> RunVbanProbeAsync(string[] args)
             Console.WriteLine();
             Console.WriteLine("Batched arrival detected. Packets are being held back and released in");
             Console.WriteLine("groups, which the jitter buffer cannot smooth away at its default depth.");
-            Console.WriteLine("Run start-vban.bat with --jitter raised (e.g. --jitter 250) to test that");
-            Console.WriteLine("theory, and watch the buffer line it prints.");
+            Console.WriteLine("Re-run AudioHub.Cli.exe --vban with --jitter 250 to test that theory,");
+            Console.WriteLine("and watch the buffer line it prints.");
         }
 
         Console.WriteLine();

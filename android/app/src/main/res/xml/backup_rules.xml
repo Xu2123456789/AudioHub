@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  与 data_extraction_rules.xml 配对：minSdk 是 30，低于 Android 12（31），
+  所以 Android 12 之前的机型仍走 android:fullBackupContent 这条规则。
+  两个文件都"每个域全 exclude"，效果一致：什么都不备份、不随换机迁移。
+-->
+<full-backup-content>
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+</full-backup-content>

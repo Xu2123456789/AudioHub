@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  与 AndroidManifest 里的 allowBackup="false" 一起构成"什么都不备份"的双保险。
+
+  Android 12（API 31）起把 allowBackup 标为 deprecated，lint 报 DataExtractionRules，
+  要求改用这里这份规则来描述云备份与设备迁移各能拿什么。这里的做法是每个域都 exclude，
+  效果等同于 allowBackup=false：配对密钥（在应用私有 SharedPreferences 里）不会随
+  换机迁移 / 云备份离开这台手机。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

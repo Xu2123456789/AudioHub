@@ -15,8 +15,8 @@ function Write-Look([string]$t) { Write-Host ("  >> 看这里：" + $t) -Foregro
 
 Write-Host ""
 Write-Host "  AudioHub 验证工具" -ForegroundColor Cyan
-Write-Host "  本工具只做验证 / 排查；日常使用请双击 start-audiohub.bat。"
-Write-Host "  验证时请先关掉 start-audiohub.bat（两者都要占 UDP 6980，不能同开）。"
+Write-Host "  本工具只做验证 / 排查；日常使用请按 Win 搜 AudioHub 启动（或双击 start-audiohub.bat）。"
+Write-Host "  验证时请先退出已经启动的 AudioHub（两者都要占 UDP 6980，不能同开）。"
 
 # 第 1 步
 Write-Step 1 "查看电脑 IP（手机要填这个地址）"
@@ -117,11 +117,13 @@ Write-Host "    端口     ：6980（默认，不要改）" -ForegroundColor Whi
 Write-Host "    流名称   ：留空（默认 AudioHub，不要改）" -ForegroundColor White
 Write-Host "    密钥     ：第 4 步抄下的那串（要加密就填；不填 = 明文）" -ForegroundColor White
 Write-Host ""
-Write-Info "重要：加密只有在“点【查找电脑】并选中这台电脑”后才生效。"
-Write-Info "      手动填 IP 时手机只会明文发送，填了密钥也不会用（这是 App 的限制）。"
+Write-Info "重要：派生密钥要用电脑身份，得先知道“这是哪台电脑”。"
+Write-Info "      点【查找电脑】选中、扫二维码都自带身份；短码和手填 IP 只给地址，"
+Write-Info "      点【开始发送】时手机会单播问电脑一次“你是谁、要不要加密”。"
+Write-Info "      问到了就能加密；问不到时填了密钥会被拦下并说明原因，不填密钥就走明文。"
 Write-Host ""
 Write-Do "点【查找电脑】→ 选中这台电脑 → 输入密钥 → 点【开始发送】→ 同意录屏授权。"
-Write-Info "如果【查找电脑】什么都找不到，就手填第 1 步的 IP（明文也能通，只是不加密）。"
+Write-Info "如果【查找电脑】什么都找不到，就手填第 1 步的 IP；能通，但能不能加密要看那次单播探测。"
 
 # 第 6 步
 Write-Step 6 "电脑开始接收（90 秒）"
@@ -141,10 +143,10 @@ Write-Info "  1) 上面 accepted 数字在涨（或看到“收到包”）= 声
 Write-Info "  2) 耳机里听到手机的声音 = 完整成功。"
 Write-Info "  3) 若 90 秒内 accepted 一直是 0，逐个检查："
 Write-Info "     - 手机填的 IP 是第 1 步那个绿色地址、端口 6980；"
-Write-Info "     - 防火墙两条规则都在（第 2 步显示 OK）；缺了就在根目录右键 allow-firewall.bat，"
-Write-Info "       选“以管理员身份运行”，再重开本脚本；"
+Write-Info "     - 防火墙两条规则都在（第 2 步显示 OK）；缺了就双击根目录的 allow-firewall.bat，"
+Write-Info "       它会自己弹 UAC 提权，点“是”即可，再重开本脚本；"
 Write-Info "     - 手机和电脑在同一 Wi-Fi（手机热点也行，但要关掉“客户端隔离”）；"
-Write-Info "     - 验证时没有同时开 start-audiohub.bat；"
-Write-Info "     - 用【查找电脑】选中电脑（手填 IP 只能明文）。"
+Write-Info "     - 验证时没有同时开着 AudioHub 托盘程序；"
+Write-Info "     - 手机知道电脑身份：用【查找电脑】选中、扫码，或让点开始时的单播探测问到。"
 Write-Host ""
 Read-Host "按回车关闭" | Out-Null
