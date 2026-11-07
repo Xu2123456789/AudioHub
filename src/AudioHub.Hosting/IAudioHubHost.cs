@@ -62,6 +62,25 @@ public interface IAudioHubHost : IAsyncDisposable
     SecurityMode SecurityMode { get; }
 
     /// <summary>
+    /// Changes <see cref="SecurityMode"/> while the graph is running.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A setter rather than a constructor option because the setting is a switch in the window, and
+    /// "changing it needs a restart" is not something a user should have to know. The earlier
+    /// version only read it at startup, so the window showed the new value while the running hub
+    /// kept enforcing the old one — the worst kind of disagreement, because both halves look right
+    /// on their own.
+    /// </para>
+    /// <para>
+    /// Implementations must update <i>all</i> consumers together: what discovery advertises, what
+    /// the transport accepts, and whether a pairing key is still shown. Updating only some of them
+    /// is how a phone ends up sealing packets at a hub that will not open them.
+    /// </para>
+    /// </remarks>
+    void SetSecurityMode(SecurityMode mode);
+
+    /// <summary>
     /// Discovery diagnostics, or null when discovery is off.
     /// </summary>
     /// <remarks>

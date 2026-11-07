@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.Typeface
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -21,6 +22,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -47,6 +49,15 @@ import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import java.io.File
 import java.util.UUID
+
+// 配色只在这里定一次。界面全部用代码搭，"深一点的灰"散落在十几个 setTextColor 里
+// 就再也调不动了。品牌蓝和电脑端、图标底色是同一个 #2563EB。
+private val INK = Color.parseColor("#111827")
+private val MUTED = Color.parseColor("#6B7280")
+private val BG = Color.parseColor("#F5F6F8")
+private val ACCENT = Color.parseColor("#2563EB")
+private val SUCCESS = Color.parseColor("#1D9E75")
+private val DANGER = Color.parseColor("#A32D2D")
 
 /**
  * 界面。四件事：找到电脑、必要时配一次对、开始/停止、把实时状态显示出来。
@@ -77,6 +88,18 @@ class MainActivity : Activity() {
     private lateinit var hubListView: LinearLayout
     private lateinit var updateButton: Button
     private lateinit var shareModeGroup: RadioGroup
+
+    /** 整页的滚动容器。留着是为了把提示条滚进视野。 */
+    private lateinit var rootScroll: ScrollView
+
+    /** 页面内的提示条（替代会被截断的长 Toast）。 */
+    private lateinit var noticeView: TextView
+
+    /** "当前连接的是谁"那一行。 */
+    private lateinit var targetView: TextView
+
+    /** 密钥那块灰底卡片：里面两件东西都藏起来时，整块也要一起消失。 */
+    private lateinit var keyBlock: LinearLayout
 
     private var shareWholeRadioId = 0
 
@@ -149,43 +172,86 @@ class MainActivity : Activity() {
 
     private fun buildUi(): View {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val pad = dp(16)
 
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
+            setPadding(dp(18), dp(20), dp(18), dp(28))
         }
 
+        // ---- 抬头 ------------------------------------------------------------
         column.addView(
             TextView(this).apply {
-                text = "第一步：找到电脑"
-                textSize = 14f
-                setPadding(0, 0, 0, dp(4))
+                text = "AudioHub"
+                textSize = 22f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(INK)
+            },
+        )
+        column.addView(
+            TextView(this).apply {
+                text = getString(R.string.app_subtitle)
+                textSize = 13f
+                setTextColor(MUTED)
+                setPadding(0, dp(3), 0, dp(14))
             },
         )
 
-        findButton = Button(this).apply {
-            text = getString(R.string.button_find_hub)
+        // ---- 当前连接 + 开始 / 停止 -------------------------------------------
+        // 连哪台、加不加密、能不能开始 —— 这三件事决定用户下一步按什么，
+        // 所以放一屏的最上面。以前它们散在长页面里，配上候选列表一撑就滚不动了。
+        val statusCard = addCard(column, getString(R.string.section_target), topMargin = 0)
+
+        targetView = TextView(this).apply {
+            text = getString(R.string.target_none)
+            textSize = 16f
+            setTextColor(INK)
+        }
+        statusCard.addView(targetView)
+
+        // 点开始之前就说清这次会加密还是明文：等连上再看已经晚了。
+        linkPlanView = TextView(this).apply {
+            textSize = 13f
+            setTextColor(MUTED)
+            setPadding(0, dp(5), 0, dp(14))
+        }
+        statusCard.addView(linkPlanView)
+
+        toggleButton = primaryButton(getString(R.string.button_start)).apply {
+            setOnClickListener { onToggleClicked() }
+        }
+        statusCard.addView(toggleButton, fullWidth())
+
+        // ---- 提示条 ----------------------------------------------------------
+        // 替代长 Toast。用户报过"提示信息太长显示不全"：Toast 会被单行截断，
+        // 而这里的话恰恰不能截断 —— "这台电脑要求加密，请先填密钥"截掉一半就没有意义了。
+        // 放在页面里能换行、能一直停着，看完点一下收掉。
+        noticeView = TextView(this).apply {
+            textSize = 13f
+            setTextColor(INK)
+            setBackgroundResource(R.drawable.bg_notice)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener { visibility = View.GONE }
+        }
+        column.addView(noticeView, fullWidth().apply { topMargin = dp(10) })
+
+        // ---- 连接电脑 --------------------------------------------------------
+        val connectCard = addCard(column, getString(R.string.section_connect))
+
+        findButton = primaryButton(getString(R.string.button_find_hub)).apply {
             setOnClickListener { startDiscovery() }
         }
-        column.addView(findButton)
+        connectCard.addView(findButton, fullWidth())
 
-        // 候选列表。每次查完重建：电脑可能来了又走，留一份陈旧的列表比没有更糟。
-        hubListView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, dp(8))
-        }
-        column.addView(hubListView)
-
-        // 自动发现失败时的两条快速通道。放在 IP 输入框上面，因为它们比手打地址更省事。
+        // 自动发现不通时的两条快速通道。它们比手打地址省事，
+        // 而且在"路由器不转发广播"的网络里往往还能走通，所以摆在显眼处。
         val manualRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
 
-        scanButton = Button(this).apply {
-            text = getString(R.string.button_scan_qr)
+        scanButton = secondaryButton(getString(R.string.button_scan_qr)).apply {
             setOnClickListener { startScan() }
         }
-        codeButton = Button(this).apply {
-            text = getString(R.string.button_short_code)
+        codeButton = secondaryButton(getString(R.string.button_short_code)).apply {
             setOnClickListener { askForShortCode() }
         }
 
@@ -197,65 +263,37 @@ class MainActivity : Activity() {
             codeButton,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) },
         )
-        column.addView(manualRow)
+        connectCard.addView(manualRow, fullWidth().apply { topMargin = dp(8) })
 
-        column.addView(label("电脑 IP（点上面找到的电脑会自动填；也可以手填）"))
-        hostView = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            hint = "例如 192.168.1.5"
-            setText(prefs.getString(KEY_HOST, ""))
-        }
-        column.addView(hostView)
+        // 候选列表。每次查完重建：电脑可能来了又走，留一份陈旧的列表比没有更糟。
+        hubListView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        connectCard.addView(hubListView, fullWidth())
 
-        // 端口和流名称默认藏起来：绝大多数人不需要改，摆在外面只会让第一次打开更吓人。
-        val advancedToggle = TextView(this).apply {
-            text = getString(R.string.advanced_toggle)
-            textSize = 12f
-            setPadding(0, dp(10), 0, dp(2))
-            isClickable = true
-            setOnClickListener {
-                advancedContainer.visibility =
-                    if (advancedContainer.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-            }
-        }
-        column.addView(advancedToggle)
-
-        advancedContainer = LinearLayout(this).apply {
+        // ---- 密钥（只在需要时出现）-------------------------------------------
+        // 必须放在"高级设置"外面：电脑要求加密时，用户要一眼看到"该填密钥了"，
+        // 而不是先去展开一个写着"高级"的折叠块再找。
+        val keyCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_card_sunken)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             visibility = View.GONE
         }
 
-        advancedContainer.addView(label("端口（保持 6980，除非电脑端改过）"))
-        portView = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(prefs.getString(KEY_PORT, AudioCaptureService.DEFAULT_PORT.toString()))
-        }
-        advancedContainer.addView(portView)
-
-        advancedContainer.addView(label("流名称（电脑端默认不校验，留空即用 AudioHub）"))
-        streamView = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT
-            setText(prefs.getString(KEY_STREAM, AudioCaptureService.DEFAULT_STREAM))
-        }
-        advancedContainer.addView(streamView)
-
-        column.addView(advancedContainer)
-
-        // 密钥输入框默认藏着：绝大多数人用不上（电脑默认是明文模式）。
-        // 只有选中的电脑要求加密、或支持加密时，才把它显示出来。
         keyHintView = TextView(this).apply {
-            textSize = 12f
+            textSize = 13f
+            setTextColor(INK)
             visibility = View.GONE
-            setPadding(0, dp(12), 0, dp(4))
+            setPadding(0, 0, 0, dp(6))
         }
-        column.addView(keyHintView)
+        keyCard.addView(keyHintView)
 
         keyView = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
             hint = "例如 ABCDE-FGHIJ-KLMNP-QRSTV-WXYZ2"
+            textSize = 14f
             visibility = View.GONE
         }
-        column.addView(keyView)
+        keyCard.addView(keyView, fullWidth())
 
         // 边输密钥边更新"链路"提示，不用等点开始才知道会不会加密。
         keyView.addTextChangedListener(object : android.text.TextWatcher {
@@ -268,83 +306,234 @@ class MainActivity : Activity() {
             override fun afterTextChanged(s: android.text.Editable?) = Unit
         })
 
+        keyBlock = keyCard
+        column.addView(keyBlock, fullWidth().apply { topMargin = dp(10) })
+
+        // ---- 高级设置 --------------------------------------------------------
+        val advancedCard = addCard(column, null)
+
+        advancedContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+
+        val advancedToggle = TextView(this).apply {
+            text = getString(R.string.advanced_title_closed)
+            textSize = 14f
+            setTextColor(MUTED)
+            isClickable = true
+            setPadding(0, dp(2), 0, dp(2))
+            setOnClickListener {
+                val show = advancedContainer.visibility != View.VISIBLE
+                advancedContainer.visibility = if (show) View.VISIBLE else View.GONE
+                text = getString(if (show) R.string.advanced_title_open else R.string.advanced_title_closed)
+            }
+        }
+        advancedCard.addView(advancedToggle)
+        advancedCard.addView(advancedContainer, fullWidth())
+
+        advancedContainer.addView(fieldLabel("电脑 IP（点上面找到的电脑会自动填）"))
+        hostView = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            hint = "例如 192.168.1.5"
+            textSize = 14f
+            setText(prefs.getString(KEY_HOST, ""))
+        }
+        advancedContainer.addView(hostView, fullWidth())
+
+        advancedContainer.addView(fieldLabel("端口（保持 6980，除非电脑端改过）"))
+        portView = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            textSize = 14f
+            setText(prefs.getString(KEY_PORT, AudioCaptureService.DEFAULT_PORT.toString()))
+        }
+        advancedContainer.addView(portView, fullWidth())
+
+        advancedContainer.addView(fieldLabel("流名称（电脑端默认不校验，留空即用 AudioHub）"))
+        streamView = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            textSize = 14f
+            setText(prefs.getString(KEY_STREAM, AudioCaptureService.DEFAULT_STREAM))
+        }
+        advancedContainer.addView(streamView, fullWidth())
+
         // 共享来源：决定系统授权弹窗里默认共享"整个屏幕"还是"单个应用"。
         // 这只是 Android 14 起"预填默认项"的提示，真正的授权确认仍需用户点。
-        column.addView(label(getString(R.string.share_mode_label)))
-        shareModeGroup = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
-        }
+        advancedContainer.addView(fieldLabel(getString(R.string.share_mode_label)))
+        shareModeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+
         val wholeRadio = RadioButton(this).apply {
             id = View.generateViewId()
             text = getString(R.string.share_mode_whole)
+            textSize = 14f
         }
         val appRadio = RadioButton(this).apply {
             id = View.generateViewId()
             text = getString(R.string.share_mode_app)
+            textSize = 14f
         }
         shareWholeRadioId = wholeRadio.id
         shareModeGroup.addView(wholeRadio)
         shareModeGroup.addView(appRadio)
         val savedShare = prefs.getString(KEY_SHARE_MODE, SHARE_WHOLE)
         if (savedShare == SHARE_APP) appRadio.isChecked = true else wholeRadio.isChecked = true
-        column.addView(shareModeGroup)
+        advancedContainer.addView(shareModeGroup)
 
-        // 点"开始"之前就要说清这次会加密还是明文：等连上再看已经晚了。
-        linkPlanView = TextView(this).apply {
-            textSize = 13f
-            setPadding(0, dp(10), 0, dp(4))
-        }
-        column.addView(linkPlanView)
-
-        toggleButton = Button(this).apply {
-            text = getString(R.string.button_start)
-            setOnClickListener { onToggleClicked() }
-        }
-        column.addView(toggleButton)
-
+        // ---- 运行状态 --------------------------------------------------------
+        // 这一块是出问题时唯一能拿出来的证据（发了多少包、峰值多大），
+        // 所以留在页面上、可选中复制，而不是藏在日志里。
+        val stateCard = addCard(column, getString(R.string.section_status))
         statusView = TextView(this).apply {
             typeface = Typeface.MONOSPACE
-            textSize = 13f
+            textSize = 12f
+            setTextColor(MUTED)
             setTextIsSelectable(true)
         }
-        column.addView(
-            ScrollView(this).apply { addView(statusView) },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
-        )
+        stateCard.addView(statusView, fullWidth())
 
+        // ---- 页脚 ------------------------------------------------------------
         column.addView(
             TextView(this).apply {
                 textSize = 12f
+                setTextColor(MUTED)
                 text = getString(R.string.usage_note)
+                setPadding(dp(2), dp(16), dp(2), dp(10))
             },
         )
 
-        column.addView(label(getString(R.string.update_section)))
-        updateButton = Button(this).apply {
-            text = getString(R.string.button_check_update)
+        updateButton = secondaryButton(getString(R.string.button_check_update)).apply {
             setOnClickListener { onCheckUpdateClicked() }
         }
-        column.addView(updateButton)
+        column.addView(updateButton, fullWidth().apply { topMargin = dp(4) })
 
         // 密钥没能被硬件保护时要说出来。静默降级等于假装安全。
         pairings.storageNote?.let { note ->
             column.addView(
                 TextView(this).apply {
                     textSize = 12f
+                    setTextColor(DANGER)
                     text = "注意：$note"
-                    setPadding(0, dp(8), 0, 0)
+                    setPadding(dp(2), dp(10), dp(2), 0)
                 },
             )
         }
 
-        return column
+        // 整页可滚 —— 这是上次"自动发现一出来，下面的按钮就再也看不见"的正面修法。
+        // 根视图是 ScrollView，内容多长都能滚到底，而不是让中间某个控件去抢高度。
+        return ScrollView(this).apply {
+            setBackgroundColor(BG)
+            isFillViewport = true
+            addView(
+                column,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }.also { rootScroll = it }
     }
 
+    // ------------------------------------------------------------ 样式零件
+    //
+    // 界面全部用代码搭（这个工程刻意没有任何 AndroidX 依赖），
+    // 所以"卡片长什么样、主按钮长什么样"必须各只有一处定义。
+    // 以前每个控件各自设边距和字号，改一次颜色要找十几处。
+
+    /** 一张白卡片。分组靠卡片，不靠一堆分隔线。 */
+    private fun addCard(parent: LinearLayout, title: String?, topMargin: Int = 12): LinearLayout {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_card)
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+        }
+
+        if (!title.isNullOrEmpty()) {
+            card.addView(
+                TextView(this).apply {
+                    text = title
+                    textSize = 12f
+                    setTextColor(MUTED)
+                    setPadding(0, 0, 0, dp(10))
+                },
+            )
+        }
+
+        parent.addView(
+            card,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { this.topMargin = dp(topMargin) },
+        )
+
+        return card
+    }
+
+    /** 一屏只有一个主按钮：它永远是"下一步该按的那个"。 */
+    private fun primaryButton(text: String): Button = Button(this).apply {
+        this.text = text
+        textSize = 16f
+        isAllCaps = false
+        setTextColor(Color.WHITE)
+        setBackgroundResource(R.drawable.bg_btn_primary)
+        stateListAnimator = null
+        minHeight = dp(50)
+        setPadding(dp(16), dp(13), dp(16), dp(13))
+    }
+
+    private fun secondaryButton(text: String): Button = Button(this).apply {
+        this.text = text
+        textSize = 14f
+        isAllCaps = false
+        setTextColor(ACCENT)
+        setBackgroundResource(R.drawable.bg_btn_secondary)
+        stateListAnimator = null
+        minHeight = dp(44)
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+    }
+
+    private fun fullWidth(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+
+    private fun fieldLabel(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 12f
+            setTextColor(MUTED)
+            setPadding(0, dp(10), 0, dp(4))
+        }
+
+    /**
+     * 把一条提示显示在页面上，而不是弹一个几秒就消失、还会被截断的 Toast。
+     *
+     * 界面还没搭好时（极端情况）退回 Toast：提示宁可丑，也不能丢。
+     */
+    private fun showNotice(message: String) {
+        if (!::noticeView.isInitialized) {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            return
+        }
+
+        noticeView.text = message
+        noticeView.visibility = View.VISIBLE
+
+        // 滚到提示那儿：提示条在状态卡片下面，手机上可能正好在屏幕外，
+        // 那样"报了错却没人看见"和没报是一样的。
+        if (::rootScroll.isInitialized) {
+            rootScroll.post { rootScroll.smoothScrollTo(0, (noticeView.top - dp(8)).coerceAtLeast(0)) }
+        }
+    }
+
+    /** 列表里的小标题（"已配对的电脑" / "查到的电脑"）。 */
     private fun label(text: String): TextView =
         TextView(this).apply {
             this.text = text
-            textSize = 13f
-            setPadding(0, dp(12), 0, dp(4))
+            textSize = 12f
+            setTextColor(MUTED)
+            setPadding(dp(2), dp(10), 0, dp(2))
         }
 
     // ------------------------------------------------------------ 发现与配对
@@ -392,7 +581,7 @@ class MainActivity : Activity() {
                     } else {
                         "没找到电脑。本机地址：$nets\n请确认电脑上的 AudioHub 正在运行，且手机与它连的是同一个 Wi-Fi。"
                     }
-                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    showNotice(msg)
                 } else {
                     Toast.makeText(this, getString(R.string.hubs_found, found.size), Toast.LENGTH_SHORT).show()
                 }
@@ -408,30 +597,59 @@ class MainActivity : Activity() {
             hubListView.addView(label("已配对的电脑"))
             for (pairing in paired) {
                 val text = if (pairing.name.isBlank()) pairing.host else "${pairing.name}（${pairing.host}）"
-                hubListView.addView(hubRow(text, "点一下选中") { selectPaired(pairing) })
+                hubListView.addView(hubRow(text, "点一下选中") { selectPaired(pairing) }, rowParams())
             }
         }
 
         if (candidates.isNotEmpty()) {
             hubListView.addView(label("查到的电脑"))
             for (hub in candidates) {
-                hubListView.addView(hubRow(hub.label, describeSecurity(hub.securityMode)) { selectHub(hub) })
+                hubListView.addView(
+                    hubRow(hub.label, describeSecurity(hub.securityMode)) { selectHub(hub) },
+                    rowParams(),
+                )
             }
         }
     }
 
-    private fun hubRow(title: String, subtitle: String, onClick: () -> Unit): TextView {
-        val marker = android.util.TypedValue()
-        theme.resolveAttribute(android.R.attr.selectableItemBackground, marker, true)
+    private fun rowParams(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(6) }
 
-        return TextView(this).apply {
-            text = "$title\n$subtitle"
-            textSize = 14f
-            setPadding(dp(10), dp(8), dp(10), dp(8))
+    /**
+     * 列表里可点的一行：上面一行名字、下面一行说明。
+     *
+     * 以前是"名字\n说明"塞进一个 TextView，靠换行符排版 —— macOS 式的大小字号
+     * 根本没法用，两行永远一样重。现在上下两行分开，名字醒目、说明退到灰色。
+     */
+    private fun hubRow(title: String, subtitle: String, onClick: () -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_row)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             isClickable = true
-            setBackgroundResource(marker.resourceId)
             setOnClickListener { onClick() }
         }
+
+        row.addView(
+            TextView(this).apply {
+                text = title
+                textSize = 15f
+                setTextColor(INK)
+            },
+        )
+        row.addView(
+            TextView(this).apply {
+                text = subtitle
+                textSize = 12f
+                setTextColor(MUTED)
+                setPadding(0, dp(3), 0, 0)
+            },
+        )
+
+        return row
     }
 
     private fun describeSecurity(mode: Int): String = when (mode) {
@@ -458,6 +676,75 @@ class MainActivity : Activity() {
         portView.setText(pairing.port.toString())
         updateKeyVisibility()
         renderHubList()
+    }
+
+    /**
+     * 单播问一次"这个地址上是哪台电脑、要不要加密"，问到了就填进界面，问完再回调。
+     *
+     * 为什么不能省：短码只编进一个地址，手填地址更是只有地址。而加密必须用**电脑身份**
+     * 派生密钥（两端派生的密钥要一模一样），还得知道电脑到底要不要加密。
+     * 少了这两样就会变成用户报的那个现象 —— 填了配对密钥仍然连不上，
+     * 而提示指向错误的方向（"好像是无法找到电脑"）。
+     *
+     * 电脑端对任何来源的 Probe 都应答，所以单播走得通；这也顺手绕开
+     * "路由器不转发广播"，而短码本来正是为那种环境准备的。
+     *
+     * @param onSettled 探测结束（无论成没成）后在主线程回调，参数就是探测结果
+     *   （null = 没有应答）。**一定会被调用一次**，否则"点开始"在探测失败时
+     *   就永远没有下文了。把结果交回去而不是让调用方回头看
+     *   [selectedHubId]：那个字段在探测失败时仍是上一次的旧值，
+     *   拿它判断成败会得出"成功"的结论 —— 正是"同一个判定写两处"的老毛病。
+     */
+    private fun identifyAddress(host: String, onSettled: (DiscoveredHub?) -> Unit) {
+        toggleButton.isEnabled = false
+
+        // 局域网往返是毫秒级，所以正常情况下不该看到任何"正在确认"。
+        // 300ms 后才提示：既不给每次点开始都闪一句噪音，也不至于让网络不对的人
+        // 面对一个按下去没反应的按钮。
+        val slowHint = Runnable { showNotice(getString(R.string.identifying_hub, host)) }
+        handler.postDelayed(slowHint, 300L)
+
+        Thread {
+            val hub = runCatching { DiscoveryClient().probeAddress(host, timeoutMs = 1_200L) }.getOrNull()
+
+            handler.post {
+                handler.removeCallbacks(slowHint)
+                toggleButton.isEnabled = true
+                if (isFinishing || isDestroyed) {
+                    return@post
+                }
+
+                // 探测期间用户可能已经改了地址。只接受"问的就是当前这个地址"的结果，
+                // 否则会把甲的电脑身份填到乙的地址上 —— 那是最坏的一种错配：
+                // 用甲的密钥去连乙，界面、日志、音量全都正常，只是永远没有声音。
+                val accepted = hub?.takeIf { hostView.text.toString().trim() == host }
+                if (accepted != null) {
+                    applyIdentifiedHub(accepted)
+                }
+                onSettled(accepted)
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /**
+     * 把探测到的电脑信息填进界面。
+     *
+     * 只写 [selectedSecurityMode]（电脑自己广播的原话），不在这里改写它 ——
+     * "要不要加密"仍然只有 [resolveSendMode] 一处判定。
+     */
+    private fun applyIdentifiedHub(hub: DiscoveredHub) {
+        selectedHubId = hub.hubId
+        selectedSecurityMode = hub.securityMode
+
+        // 端口用电脑自己报的那个：用户在高级里改过、或短码默认值不对时，
+        // 电脑的答案比我们的猜测可靠。
+        if (hub.vbanPort in 1..65_535) {
+            portView.setText(hub.vbanPort.toString())
+        }
+
+        updateKeyVisibility()
+        renderHubList()
+        savePrefs()
     }
 
     /**
@@ -492,21 +779,20 @@ class MainActivity : Activity() {
         val hubId = selectedHubId
         val remembered = hubId != null && pairings.keyFor(hubId) != null
 
-        if (remembered) {
-            keyHintView.visibility = View.VISIBLE
-            keyHintView.text = "已记住这台电脑的密钥，不用再填。"
-            keyView.visibility = View.GONE
-            return
-        }
+        when {
+            remembered -> {
+                keyHintView.visibility = View.VISIBLE
+                keyHintView.text = "已记住这台电脑的密钥，不用再填。"
+                keyView.visibility = View.GONE
+            }
 
-        when (selectedSecurityMode) {
-            SecurityMode.REQUIRED -> {
+            selectedSecurityMode == SecurityMode.REQUIRED -> {
                 keyHintView.visibility = View.VISIBLE
                 keyHintView.text = getString(R.string.hub_requires_key)
                 keyView.visibility = View.VISIBLE
             }
 
-            SecurityMode.OPTIONAL -> {
+            selectedSecurityMode == SecurityMode.OPTIONAL -> {
                 keyHintView.visibility = View.VISIBLE
                 keyHintView.text = getString(R.string.hub_accepts_key)
                 keyView.visibility = View.VISIBLE
@@ -516,6 +802,13 @@ class MainActivity : Activity() {
                 keyHintView.visibility = View.GONE
                 keyView.visibility = View.GONE
             }
+        }
+
+        // 里面两件东西都藏起来时，这张灰底卡片也要一起消失 ——
+        // 否则屏幕上会留一块空的灰条，看着像加载失败。
+        if (::keyBlock.isInitialized) {
+            val needed = keyHintView.visibility == View.VISIBLE || keyView.visibility == View.VISIBLE
+            keyBlock.visibility = if (needed) View.VISIBLE else View.GONE
         }
     }
 
@@ -530,13 +823,15 @@ class MainActivity : Activity() {
             return
         }
 
+        updateTargetLine()
+
         val hubId = selectedHubId
         val remembered = hubId != null && pairings.keyFor(hubId) != null
         val typed = keyView.text.toString().trim().isNotEmpty()
 
         if (hubId == null && hostView.text.toString().trim().isEmpty()) {
             linkPlanView.text = "链路：请先选择电脑，或填地址 / 短码 / 扫码"
-            linkPlanView.setTextColor(0xFFA32D2D.toInt())
+            linkPlanView.setTextColor(DANGER)
             return
         }
 
@@ -565,7 +860,37 @@ class MainActivity : Activity() {
         }
 
         linkPlanView.text = text
-        linkPlanView.setTextColor(if (plan.encrypt) 0xFF1D9E75.toInt() else 0xFFA32D2D.toInt())
+        linkPlanView.setTextColor(if (plan.encrypt) SUCCESS else DANGER)
+    }
+
+    /**
+     * 更新"当前连接"那一行：有名字就显示名字 + 地址，只有地址就显示地址。
+     *
+     * 从 [updateLinkPlan] 里调，是因为两者关心的都是"目标变没变"——
+     * 每次目标一变，链路和这一行都得跟着变，分两个入口迟早有一处漏掉。
+     */
+    private fun updateTargetLine() {
+        if (!::targetView.isInitialized || !::hostView.isInitialized) {
+            return
+        }
+
+        val host = hostView.text.toString().trim()
+        if (host.isEmpty()) {
+            targetView.text = getString(R.string.target_none)
+            return
+        }
+
+        val id = selectedHubId
+        val name = id?.let { wanted ->
+            candidates.firstOrNull { it.hubId == wanted }?.name
+                ?: pairings.all().firstOrNull { it.hubId == wanted }?.name
+        }
+
+        targetView.text = if (name.isNullOrBlank()) {
+            host
+        } else {
+            getString(R.string.target_ready, name, host)
+        }
     }
 
     /**
@@ -595,7 +920,7 @@ class MainActivity : Activity() {
             null
         } else {
             SecureEnvelope.parse(typed) ?: run {
-                Toast.makeText(this, getString(R.string.error_bad_key), Toast.LENGTH_LONG).show()
+                showNotice(getString(R.string.error_bad_key))
                 return false
             }
         }
@@ -611,7 +936,7 @@ class MainActivity : Activity() {
         )
 
         if (!plan.canStart) {
-            Toast.makeText(this, getString(R.string.error_key_needed), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.error_key_needed))
             return false
         }
 
@@ -620,7 +945,7 @@ class MainActivity : Activity() {
                 // 手填地址 + 手输密钥：没有电脑身份就派生不出密钥，这次只能明文。
                 // 必须停下来明说，否则用户会以为"我填了密钥，所以是加密的" ——
                 // 那正是这套加密最该避免的错觉。
-                Toast.makeText(this, getString(R.string.error_key_without_identity), Toast.LENGTH_LONG).show()
+                showNotice(getString(R.string.error_key_without_identity))
                 return false
             }
 
@@ -693,6 +1018,27 @@ class MainActivity : Activity() {
             return
         }
 
+        // 每次开始前都单播问一次"你是谁、要不要加密"。
+        //
+        // 两个理由，缺一不可：
+        //  · 手填地址 / 短码时，这是**唯一**能拿到身份和模式的途径（没身份就派不出密钥）；
+        //  · 已经选过电脑时，模式也必须重新读 —— 电脑那边随时能改，而且现在是免重启生效的，
+        //    本机记住的可能是上一次的值，甚至是上次启动时恢复出来的值。用户报的
+        //    "电脑关掉加密后手机还在加密"，根子就在这里。
+        //
+        // 问不到就沿用已知的：探测失败不清 [selectedHubId]，所以原本能用的加密配置不会因为
+        // "这次它没应答"而被抹掉。
+        identifyAddress(hostView.text.toString().trim()) { continueStart() }
+    }
+
+    /**
+     * 真正去"定加密方式 + 要权限 + 要录屏授权"。
+     *
+     * 从 [onToggleClicked] 里拆出来，是因为"开始"现在要等一次单播确认才继续。
+     * **只有这一个入口**：探测成功、探测失败都走它，否则"探测失败之后怎么办"
+     * 就会变成第二条判定规则 —— 而这个项目已经为"同一个判定写两处"付过五次代价。
+     */
+    private fun continueStart() {
         // 先定下这次用不用加密。放在要录屏授权之前，是为了让"密钥不对"
         // 这种立刻能修的问题在用户还没被系统弹窗打扰时就报出来。
         if (!preparePsk()) {
@@ -745,7 +1091,7 @@ class MainActivity : Activity() {
             if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                 launchLiveScan()
             } else {
-                Toast.makeText(this, getString(R.string.scan_need_camera), Toast.LENGTH_LONG).show()
+                showNotice(getString(R.string.scan_need_camera))
                 startPhotoScan()
             }
             return
@@ -758,7 +1104,7 @@ class MainActivity : Activity() {
         // 录音权限是硬性的；通知权限被拒只会让通知不显示，不拦开始。
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             pendingStart = false
-            statusView.text = getString(R.string.error_no_record_permission)
+            showNotice(getString(R.string.error_no_record_permission))
             return
         }
 
@@ -822,13 +1168,13 @@ class MainActivity : Activity() {
         }
 
         if (resultCode != RESULT_OK || data == null) {
-            statusView.text = getString(R.string.error_projection_denied)
+            showNotice(getString(R.string.error_projection_denied))
             return
         }
 
         val port = portView.text.toString().trim().toIntOrNull()
         if (port == null || port !in 1..65_535) {
-            statusView.text = getString(R.string.error_bad_port)
+            showNotice(getString(R.string.error_bad_port))
             return
         }
 
@@ -836,8 +1182,7 @@ class MainActivity : Activity() {
         // 在这里拦下来，比让它变成捕获线程里的一条错误更早也更好懂。
         val streamName = streamView.text.toString().trim().ifBlank { AudioCaptureService.DEFAULT_STREAM }
         validateStreamName(streamName)?.let { problem ->
-            statusView.text = problem
-            Toast.makeText(this, problem, Toast.LENGTH_LONG).show()
+            showNotice(problem)
             return
         }
 
@@ -926,7 +1271,7 @@ class MainActivity : Activity() {
         }
 
         if (intent.resolveActivity(packageManager) == null) {
-            Toast.makeText(this, getString(R.string.camera_missing), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.camera_missing))
             return
         }
 
@@ -954,7 +1299,7 @@ class MainActivity : Activity() {
                 }
 
                 if (payload == null) {
-                    Toast.makeText(this, getString(R.string.scan_failed), Toast.LENGTH_LONG).show()
+                    showNotice(getString(R.string.scan_failed))
                 } else {
                     applyQrPayload(payload)
                 }
@@ -974,7 +1319,7 @@ class MainActivity : Activity() {
             // 相机打不开（被占用 / 没有可用相机）。这里必须真的接住：
             // 否则用户点了扫码、只看到一句提示，然后什么都不会发生 ——
             // 而 manifest 里写明"没有相机也能装"，那就必须留一条能走通的退路。
-            Toast.makeText(this, getString(R.string.scan_camera_failed), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.scan_camera_failed))
             startPhotoScan()
             return
         }
@@ -987,7 +1332,7 @@ class MainActivity : Activity() {
         val text = data.getStringExtra(ScanActivity.EXTRA_QR_TEXT) ?: return
         val payload = ConnectionQr.parse(text)
         if (payload == null) {
-            Toast.makeText(this, getString(R.string.scan_not_audiohub), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.scan_not_audiohub))
             return
         }
 
@@ -1035,13 +1380,13 @@ class MainActivity : Activity() {
 
         if (payload.carriesKey && hubId == null) {
             // 有密钥却没有身份：存不进"按电脑身份记住"的表，硬发只会退成明文。
-            Toast.makeText(this, getString(R.string.qr_missing_identity), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.qr_missing_identity))
             return
         }
 
         val psk = payload.pairingKey?.let { SecureEnvelope.parse(it) }
         if (payload.pairingKey != null && psk == null) {
-            Toast.makeText(this, getString(R.string.error_bad_key), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.error_bad_key))
             return
         }
 
@@ -1051,7 +1396,11 @@ class MainActivity : Activity() {
         // 这里以前是 `if (psk != null) REQUIRED else NONE`，等于**用"有没有密钥"覆盖电脑的原话**。
         // 后果：电脑设「仅加密」、而扫到的码不带密钥时，本机模式被写成 NONE，
         // 界面显示"明文发送"，用户点开始后每个包都被电脑拒掉，双方都不报错。
-        selectedSecurityMode = advertisedModeFor(hubId)
+        //
+        // 现在优先用二维码里带的 s= 字段 —— 那是电脑生成二维码时**自己说的**原话，
+        // 比"本机记不记得这台电脑"可靠得多，也正是"电脑关掉加密后手机照旧加密"
+        // 那个故障的正面修法。旧版二维码没这个字段，才退回按身份去查。
+        selectedSecurityMode = payload.securityMode ?: advertisedModeFor(hubId)
 
         if (hubId != null && psk != null) {
             pairings.remember(hubId, psk, payload.name.orEmpty(), payload.host, payload.port)
@@ -1062,7 +1411,7 @@ class MainActivity : Activity() {
                 Toast.LENGTH_SHORT,
             ).show()
         } else {
-            Toast.makeText(this, getString(R.string.qr_address_only), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.qr_address_only))
         }
 
         updateKeyVisibility()
@@ -1095,34 +1444,51 @@ class MainActivity : Activity() {
     private fun applyShortCode(raw: String) {
         val address = ShortCode.decode(raw)
         if (address == null) {
-            Toast.makeText(this, getString(R.string.short_code_failed), Toast.LENGTH_LONG).show()
+            showNotice(getString(R.string.short_code_failed))
             return
         }
 
         hostView.setText(address)
         portView.setText(ShortCode.DEFAULT_PORT.toString())
 
-        // 短码不带身份，但地址能反查"这台以前配过没有"。配过就沿用已存的密钥，
-        // 否则会从"加密"悄悄退回明文 —— 在要求加密的电脑上，表现就是永远没有声音。
-        val pairing = pairings.all().firstOrNull { it.host == address }
-        if (pairing != null) {
-            selectedHubId = pairing.hubId
-            // 同样是"别用本机的猜测覆盖电脑的原话"：这里以前硬写 OPTIONAL，
-            // 于是电脑设「仅加密」时会显示成"此电脑支持加密"，而不是"要求加密"。
-            selectedSecurityMode = advertisedModeFor(pairing.hubId)
-            Toast.makeText(this, getString(R.string.short_code_paired, address), Toast.LENGTH_SHORT).show()
-        } else {
-            selectedHubId = null
-            // 这里**不要**再写 selectedSecurityMode = NONE。那个字段的语义是
-            // "电脑自己说的话"，而短码只给了个地址，关于加密它一个字都没说。
-            // 硬塞一个 NONE 进去，等于替电脑宣布"我关了加密"，将来任何一处
-            // 直接读它都会得出错误结论。没有身份时判定统一走
-            // advertisedModeOrNull() 的"不知道"，由 resolveSendMode 按未听到广播处理。
-            Toast.makeText(this, getString(R.string.short_code_no_pairing, address), Toast.LENGTH_LONG).show()
+        // 短码里只有地址。先去问一次"你是哪台电脑、要不要加密"——
+        // 这正是第 9 条那个 bug 的正面修法：电脑设了加密时，手机必须拿到它的身份
+        // 才能派生密钥；拿不到就只能明文发，而电脑把明文全拒掉，双方都不报错。
+        //
+        // 以前这里只靠"按地址反查已配对记录"猜身份，猜不到就退成明文；
+        // 现在先问电脑本人，问不到才退回那条老路（手机上一点记录都没有时它仍有用）。
+        identifyAddress(address) { hub ->
+            if (hub != null) {
+                val name = candidates.firstOrNull { it.hubId == hub.hubId }?.name
+                    ?.takeIf { it.isNotBlank() } ?: hub.name.ifBlank { address }
+                showNotice(
+                    getString(R.string.short_code_identified, name, describeSecurity(hub.securityMode)),
+                )
+                return@identifyAddress
+            }
+
+            // 电脑没应答：可能没开、也可能不在同一个 Wi-Fi。此时身份确实拿不到，
+            // 只能退回"按地址反查已配对的电脑"，至少让配过对的人还能加密。
+            val pairing = pairings.all().firstOrNull { it.host == address }
+            if (pairing != null) {
+                selectedHubId = pairing.hubId
+                selectedSecurityMode = advertisedModeFor(pairing.hubId)
+                Toast.makeText(this, getString(R.string.short_code_paired, address), Toast.LENGTH_SHORT).show()
+            } else {
+                selectedHubId = null
+                // 这里**不要**再写 selectedSecurityMode = NONE。那个字段的语义是
+                // "电脑自己说的话"，而短码只给了个地址，关于加密它一个字都没说。
+                // 硬塞一个 NONE 进去，等于替电脑宣布"我关了加密"，将来任何一处
+                // 直接读它都会得出错误结论。没有身份时判定统一走
+                // advertisedModeOrNull() 的"不知道"，由 resolveSendMode 按未听到广播处理。
+                showNotice(getString(R.string.short_code_unreachable, address))
+            }
+
+            updateKeyVisibility()
+            savePrefs()
         }
 
         updateKeyVisibility()
-        renderHubList()
         savePrefs()
     }
 

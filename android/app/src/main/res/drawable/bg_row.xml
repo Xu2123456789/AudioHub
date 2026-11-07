@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 列表可点的一行。白底 + 按下水波纹，避免每行都像是按钮。 -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#1A2563EB">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFF" />
+            <stroke android:width="1dp" android:color="#E4E8EE" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+</ripple>

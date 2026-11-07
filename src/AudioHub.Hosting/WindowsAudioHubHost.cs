@@ -31,9 +31,14 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
     private readonly TransportAudioSource? _networkSource;
     private readonly VbanTransport? _transport;
     private readonly DiscoveryListener? _discovery;
-    private readonly ISecureEnvelope? _envelope;
     private readonly DefaultDeviceWatcher _defaultDeviceWatcher;
     private readonly object _gate = new();
+
+    // Both are settable while running: the window is a switch, not a launch option. Everything
+    // that depends on the mode reads the field rather than the initial options, so there is one
+    // answer at any moment instead of two that drift apart.
+    private SecurityMode _securityMode;
+    private ISecureEnvelope? _envelope;
 
     /// <summary>
     /// Serialises every transition of the output sink — start, stop, explicit device switch, and
@@ -71,16 +76,15 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
         // must still be able to send, or turning this on would break the only setup that exists.
         // "Optional" is therefore a transition state, not a resting place — once phones are paired
         // the setting worth running is required.
-        _envelope = _options.AdvertisedSecurity == SecurityMode.None
-            ? null
-            : new AesGcmEnvelope(HubKeyStore.DeriveKey(HubKeyStore.LoadOrCreatePsk(), Identity.HubId));
+        _securityMode = _options.AdvertisedSecurity;
+        _envelope = _securityMode == SecurityMode.None ? null : CreateEnvelope();
 
         if (_options.EnableDiscovery)
         {
             _discovery = new DiscoveryListener(
                 Identity,
                 _options.VbanPort,
-                _options.AdvertisedSecurity);
+                _securityMode);
         }
 
         if (_options.CaptureLocalSound)
@@ -141,7 +145,37 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
             streamName: _options.VbanStreamName,
             expectedFormat: NetworkFormat,
             envelope: _envelope,
-            requireEncryption: _options.AdvertisedSecurity == SecurityMode.Required);
+            requireEncryption: _securityMode == SecurityMode.Required);
+
+    /// <summary>Builds the envelope for the current identity and stored key.</summary>
+    private ISecureEnvelope CreateEnvelope() =>
+        new AesGcmEnvelope(HubKeyStore.DeriveKey(HubKeyStore.LoadOrCreatePsk(), Identity.HubId));
+
+    /// <summary>
+    /// Changes what this hub accepts from senders while it is running.
+    /// </summary>
+    /// <remarks>
+    /// All three consumers move together, and that is the whole point: what discovery advertises,
+    /// what the transport accepts, and whether a pairing key is still worth showing. Updating only
+    /// some of them is exactly how a phone ends up sealing packets at a hub that has no envelope to
+    /// open them with — silently, on both sides.
+    /// </remarks>
+    public void SetSecurityMode(SecurityMode mode)
+    {
+        lock (_gate)
+        {
+            if (_securityMode == mode)
+            {
+                return;
+            }
+
+            _securityMode = mode;
+            _envelope = mode == SecurityMode.None ? null : CreateEnvelope();
+
+            _transport?.SetProtection(_envelope, requireEncryption: mode == SecurityMode.Required);
+            _discovery?.SetSecurityMode(mode);
+        }
+    }
 
     /// <summary>
     /// Diagnostics for the network source, or null when none is configured.
@@ -156,7 +190,7 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
     /// Null when encryption is off.
     /// </summary>
     public string? PairingKey =>
-        _options.AdvertisedSecurity == SecurityMode.None
+        _securityMode == SecurityMode.None
             ? null
             : HubKeyStore.ToDisplayString(HubKeyStore.LoadOrCreatePsk());
 
@@ -164,7 +198,7 @@ public sealed class WindowsAudioHubHost : IAudioHubHost
     public long? PacketsDecrypted => _transport?.PacketsDecrypted;
 
     /// <summary>What this hub demands of senders.</summary>
-    public SecurityMode SecurityMode => _options.AdvertisedSecurity;
+    public SecurityMode SecurityMode => _securityMode;
 
     /// <summary>
     /// Discovery diagnostics, or null when discovery is off. Answers probe replies even though

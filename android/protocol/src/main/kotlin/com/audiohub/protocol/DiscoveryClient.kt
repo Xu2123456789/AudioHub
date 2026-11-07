@@ -90,6 +90,65 @@ class DiscoveryClient(
     }
 
     /**
+     * 只问一台电脑：把询问包单播到指定地址，等它的应答。
+     *
+     * 存在的理由：短码只能编进一个私网地址，手填地址更是只有地址 —— 而加密要用电脑身份
+     * 派生密钥、还要知道它到底要不要加密。没有这两样，"输入了密钥却连不上"就必然发生，
+     * 而且提示会指向错误的方向（看起来像"找不到电脑"）。
+     *
+     * 电脑端对**任何**来源的 Probe 都应答（它只回给发问的那个地址），所以单播完全走得通；
+     * 这也顺手绕开了"路由器不转发广播"这类环境问题 —— 短码本来就是为那种环境准备的。
+     *
+     * @return 应答的那台电脑；超时或地址不可达时返回 null（这是正常结果，不是异常）。
+     */
+    fun probeAddress(
+        host: String,
+        timeoutMs: Long = 1_500L,
+        token: Int = (Math.random() * Int.MAX_VALUE).toInt(),
+    ): DiscoveredHub? {
+        val address = runCatching { InetAddress.getByName(host) }.getOrNull() ?: return null
+        val probe = DiscoveryProtocol.buildProbe(token)
+
+        val socket = socketFactory()
+        try {
+            socket.bind(InetSocketAddress(0))
+            socket.soTimeout = 200
+            runCatching { socket.send(DatagramPacket(probe, probe.size, address, port)) }
+                .getOrElse { return null }
+
+            val buffer = ByteArray(DiscoveryProtocol.MAX_DATAGRAM_BYTES)
+            val deadline = System.currentTimeMillis() + timeoutMs
+
+            while (System.currentTimeMillis() < deadline) {
+                val packet = DatagramPacket(buffer, buffer.size)
+                try {
+                    socket.receive(packet)
+                } catch (_: java.net.SocketTimeoutException) {
+                    continue
+                } catch (_: java.net.SocketException) {
+                    return null
+                }
+
+                val message = DiscoveryProtocol.parse(packet.data.copyOfRange(0, packet.length))
+                // Token 必须对上：否则一个迟到的、上一轮询问的应答会被当成这次的结果。
+                if (message is DiscoveryMessage.Announce && message.token == token) {
+                    return DiscoveredHub(
+                        hubId = message.hubId,
+                        name = message.name,
+                        host = packet.address?.hostAddress ?: host,
+                        vbanPort = message.vbanPort,
+                        securityMode = message.securityMode,
+                    )
+                }
+            }
+        } finally {
+            runCatching { socket.close() }
+        }
+
+        return null
+    }
+
+    /**
      * 本机有哪些可以用的 IPv4（不含回环 127.* 和没拿到地址的 169.254.*）。
      * 供界面在"没找到电脑"时把地址摆出来，帮人一眼看出手机连的是不是预期网络。
      */

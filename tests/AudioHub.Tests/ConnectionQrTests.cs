@@ -1,4 +1,5 @@
 using AudioHub.Core.Connection;
+using AudioHub.Core.Discovery;
 
 namespace AudioHub.Tests;
 
@@ -18,14 +19,44 @@ public sealed class ConnectionQrTests
             "ABCDE-FGHIJ-KLMNP-QRSTV-WXYZ2",
             HubId,
             "b321-0f13-afca-6cd2",
-            "DESKTOP-1");
+            "DESKTOP-1",
+            SecurityMode.Required);
 
         string text = ConnectionQr.Build(payload);
 
+        // The same literal is asserted by the Kotlin ConnectionQrTest. One character of drift in
+        // field order or spelling is a silent incompatibility between the two apps.
         Assert.Equal(
             "audiohub://c/1?h=10.20.30.40&p=6980&k=ABCDE-FGHIJ-KLMNP-QRSTV-WXYZ2"
-            + "&i=11111111-2222-3333-4444-555555555555&f=b321-0f13-afca-6cd2&n=DESKTOP-1",
+            + "&i=11111111-2222-3333-4444-555555555555&f=b321-0f13-afca-6cd2&n=DESKTOP-1&s=2",
             text);
+    }
+
+    [Fact]
+    public void Parse_CarriesTheSecurityModeSoAScanDoesNotHaveToGuess()
+    {
+        // Without this field a scanned connection fell back to "encryption optional" and kept
+        // sealing packets at a hub that had encryption off — the hub has no envelope at all, so
+        // every packet was dropped and neither side reported anything.
+        foreach (SecurityMode mode in new[] { SecurityMode.None, SecurityMode.Optional, SecurityMode.Required })
+        {
+            ConnectionQrPayload original = new("10.0.0.1", 6980, HubId: HubId, Mode: mode);
+
+            Assert.True(ConnectionQr.TryParse(ConnectionQr.Build(original), out ConnectionQrPayload? parsed));
+            Assert.Equal(mode, parsed!.Mode);
+        }
+    }
+
+    [Fact]
+    public void Parse_TreatsAnUnreadableModeAsAbsentRatherThanOptional()
+    {
+        foreach (string raw in new[] { "3", "-1", "required", "" })
+        {
+            Assert.True(ConnectionQr.TryParse(
+                $"audiohub://c/1?h=10.0.0.1&p=6980&s={raw}",
+                out ConnectionQrPayload? parsed));
+            Assert.Null(parsed!.Mode);
+        }
     }
 
     [Fact]

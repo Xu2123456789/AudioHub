@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Text;
+using AudioHub.Core.Discovery;
 
 namespace AudioHub.Core.Connection;
 
@@ -14,13 +15,32 @@ namespace AudioHub.Core.Connection;
 /// <param name="HubId">Stable identity, so the phone can file the pairing under the right hub.</param>
 /// <param name="Fingerprint">Human-checkable digest, shown for eyeballing only.</param>
 /// <param name="Name">Machine name, so the phone can say which computer it just scanned.</param>
+/// <param name="Mode">
+/// What this hub currently expects of senders, carried in the code so a scanned connection does
+/// not have to guess.
+/// </param>
+/// <remarks>
+/// <para>
+/// <b>Why the security mode travels in the code.</b> Before this field existed the phone learned
+/// the mode from discovery replies only, so a scan made without running discovery fell back to
+/// "encryption optional" — and a phone holding a key would then seal every packet. Against a hub
+/// with encryption turned off, sealed packets are not readable at all (there is no envelope on
+/// that side), so every single packet was dropped and <i>neither end reported anything</i>. The
+/// user saw a phone that said "sending" and a PC that said "nothing arrived".
+/// </para>
+/// <para>
+/// The mode is advisory rather than authoritative: a hostile code could claim anything. It is
+/// used to decide the send format, not to decide whether to trust the hub — that is the key's job.
+/// </para>
+/// </remarks>
 public sealed record ConnectionQrPayload(
     string Host,
     int Port,
     string? PairingKey = null,
     Guid? HubId = null,
     string? Fingerprint = null,
-    string? Name = null)
+    string? Name = null,
+    SecurityMode? Mode = null)
 {
     /// <summary>Whether this payload can encrypt without asking the user for anything else.</summary>
     public bool CarriesKey => !string.IsNullOrWhiteSpace(PairingKey);
@@ -31,7 +51,7 @@ public sealed record ConnectionQrPayload(
 /// </summary>
 /// <remarks>
 /// <para>
-/// Format: <c>audiohub://c/1?h=&lt;ip&gt;&amp;p=&lt;port&gt;[&amp;k=][&amp;i=][&amp;f=][&amp;n=]</c>.
+/// Format: <c>audiohub://c/1?h=&lt;ip&gt;&amp;p=&lt;port&gt;[&amp;k=][&amp;i=][&amp;f=][&amp;n=][&amp;s=]</c>.
 /// The version segment is there so a future format can be rejected instead of half-understood:
 /// a phone that does not know version 2 must say so rather than silently drop fields.
 /// </para>
@@ -82,6 +102,13 @@ public static class ConnectionQr
         if (!string.IsNullOrWhiteSpace(payload.Name))
         {
             text.Append("&n=").Append(Uri.EscapeDataString(payload.Name));
+        }
+
+        // Written as a bare number rather than a name: an older phone must be able to ignore a
+        // field it does not know, and a newer one must not have to parse English.
+        if (payload.Mode is { } mode)
+        {
+            text.Append("&s=").Append(((int)mode).ToString(CultureInfo.InvariantCulture));
         }
 
         return text.ToString();
@@ -159,7 +186,15 @@ public static class ConnectionQr
             ? rawName
             : null;
 
-        payload = new ConnectionQrPayload(address.ToString(), port, key, hubId, fingerprint, name);
+        // An unknown or out-of-range mode is dropped rather than defaulted: guessing "optional"
+        // is what made a scanned connection seal packets at a hub that had encryption off.
+        SecurityMode? mode = fields.TryGetValue("s", out string? modeText)
+            && int.TryParse(modeText, NumberStyles.None, CultureInfo.InvariantCulture, out int modeValue)
+            && modeValue is 0 or 1 or 2
+                ? (SecurityMode)modeValue
+                : null;
+
+        payload = new ConnectionQrPayload(address.ToString(), port, key, hubId, fingerprint, name, mode);
         return true;
     }
 

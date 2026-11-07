@@ -156,8 +156,12 @@ public sealed class VbanTransport : ITransport
     private long _packetsAccepted;
     private long _packetsRejected;
     private long _packetsDecrypted;
-    private readonly ISecureEnvelope? _envelope;
-    private readonly bool _requireEncryption;
+
+    // Swapped at run time by SetProtection: the window lets the user turn encryption on or off
+    // while audio is flowing. Volatile rather than under the lock because the receive loop reads
+    // them on every packet and must not take a lock to do it.
+    private volatile ISecureEnvelope? _envelope;
+    private volatile bool _requireEncryption;
 
     /// <summary>
     /// Largest datagram this transport will accept: a full VBAN packet plus whatever the envelope
@@ -173,6 +177,18 @@ public sealed class VbanTransport : ITransport
     /// apart again when the envelope changes.
     /// </remarks>
     private readonly int _maxDatagramBytes;
+
+    /// <summary>
+    /// Room reserved for envelope overhead even when no envelope is configured yet.
+    /// </summary>
+    /// <remarks>
+    /// The receive buffer is allocated once, when the loop starts, and a datagram that does not fit
+    /// is discarded whole rather than clipped (WSAEMSGSIZE). So it has to be sized for the largest
+    /// packet this transport could ever be asked to accept — including an envelope that is switched
+    /// on later from the window. Sizing it from the envelope present at construction would make
+    /// "turn encryption on while running" silently lose every large packet.
+    /// </remarks>
+    private const int EnvelopeReserveBytes = 64;
     private long _framesLost;
     private long _framesOutOfOrder;
     private float _lastPeakLevel;
@@ -243,8 +259,28 @@ public sealed class VbanTransport : ITransport
         _expectedFormat = expectedFormat;
         _envelope = envelope;
         _requireEncryption = requireEncryption;
-        _maxDatagramBytes = VbanPacketHeader.MaxPacketBytes + (envelope?.OverheadBytes ?? 0);
+        _maxDatagramBytes = VbanPacketHeader.MaxPacketBytes
+            + Math.Max(envelope?.OverheadBytes ?? 0, EnvelopeReserveBytes);
         Id = string.IsNullOrWhiteSpace(id) ? "vban" : id;
+    }
+
+    /// <summary>
+    /// Swaps packet protection while the transport is running.
+    /// </summary>
+    /// <param name="envelope">New envelope, or null to accept plain VBAN only.</param>
+    /// <param name="requireEncryption">
+    /// True to refuse anything that does not authenticate. With an envelope present and this false,
+    /// plain packets are still accepted — that is the transitional setting, not a resting place.
+    /// </param>
+    /// <remarks>
+    /// The buffer is already sized for any envelope this build ships (see
+    /// <see cref="EnvelopeReserveBytes"/>), so nothing else has to change here. Keeping the swap to
+    /// these two fields is what makes "no restart needed" true rather than nearly true.
+    /// </remarks>
+    public void SetProtection(ISecureEnvelope? envelope, bool requireEncryption)
+    {
+        _envelope = envelope;
+        _requireEncryption = requireEncryption;
     }
 
     /// <inheritdoc />

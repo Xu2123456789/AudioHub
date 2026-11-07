@@ -33,9 +33,13 @@ public sealed class DiscoveryListener : IDiscoveryTransport, IDisposable
 {
     private readonly HubIdentity _identity;
     private readonly int _vbanPort;
-    private readonly SecurityMode _securityMode;
     private readonly string _name;
     private readonly object _gate = new();
+
+    // Settable while running: the window lets the user change what this hub accepts, and the
+    // discovery reply is how a phone learns it. Leaving this fixed at startup is how the phone
+    // keeps sending the format the hub stopped accepting.
+    private SecurityMode _securityMode;
 
     private UdpClient? _client;
     private CancellationTokenSource? _cancel;
@@ -87,6 +91,16 @@ public sealed class DiscoveryListener : IDiscoveryTransport, IDisposable
 
     /// <summary>Identity being announced.</summary>
     public HubIdentity Identity => _identity;
+
+    /// <summary>
+    /// Changes what this hub advertises, without restarting the listener.
+    /// </summary>
+    /// <remarks>
+    /// Only affects the replies sent from now on. A phone that already connected is not told, so
+    /// the setting has to be changed <i>before</i> expecting new senders to pick it up — which is
+    /// why the window applies the change immediately rather than on next launch.
+    /// </remarks>
+    public void SetSecurityMode(SecurityMode mode) => _securityMode = mode;
 
     /// <inheritdoc />
     public void Start()

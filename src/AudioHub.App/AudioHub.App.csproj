@@ -10,7 +10,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>AudioHub.App</RootNamespace>
     <!-- Kept in step with the CLI and the Android versionName (see CHANGELOG.md). -->
-    <Version>2.2.0</Version>
+    <Version>2.3.0</Version>
     <!-- exe 文件本身的图标（资源管理器里看到的那个） -->
     <ApplicationIcon>Assets\AudioHub.ico</ApplicationIcon>
   </PropertyGroup>

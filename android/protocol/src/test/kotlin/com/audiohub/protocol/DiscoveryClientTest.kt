@@ -81,6 +81,39 @@ class DiscoveryClientTest {
         assertTrue(DiscoveryClient(port = 6_979).probe(timeoutMs = 300L).isEmpty())
     }
 
+    @Test
+    fun answersAProbeSentToASingleAddress() {
+        FakeHub(port = 0, hubId = hubId, name = "UNICAST").use { hub ->
+            hub.start()
+
+            val found = DiscoveryClient(port = hub.port).probeAddress("127.0.0.1", timeoutMs = 1_000L)
+
+            // 短码里只有地址、没有身份和加密模式，所以单播必须能问出这两样东西来，
+            // 否则"输入了配对密钥却连不上"就无解。
+            assertEquals(hubId, found?.hubId)
+            assertEquals("UNICAST", found?.name)
+            assertEquals(6_980, found?.vbanPort)
+            assertEquals(SecurityMode.OPTIONAL, found?.securityMode)
+        }
+    }
+
+    @Test
+    fun ignoresAUnicastReplyCarryingADifferentToken() {
+        // 退避掉的迟到应答如果被收下，界面会连到一台已经换了身份的电脑上。
+        FakeHub(port = 0, hubId = hubId, name = "STALE-UNICAST", tokenOverride = 12345).use { hub ->
+            hub.start()
+
+            assertNull(DiscoveryClient(port = hub.port).probeAddress("127.0.0.1", timeoutMs = 800L))
+        }
+    }
+
+    @Test
+    fun returnsNullForASingleAddressWhenNobodyListens() {
+        // 地址填错、电脑关了、或者手机不在同一个网络——都是常态，必须安静地返回 null。
+        // 这里挑一个没人监听的端口来模拟"问了没人答"。
+        assertNull(DiscoveryClient(port = 65_000).probeAddress("127.0.0.1", timeoutMs = 300L))
+    }
+
     /** 一个只会应答的最小假电脑。 */
     private class FakeHub(
         port: Int,

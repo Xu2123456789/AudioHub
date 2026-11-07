@@ -2,6 +2,15 @@
 <resources>
     <string name="app_name">AudioHub Sender</string>
 
+    <string name="app_subtitle">把电脑上的声音送到这副耳机</string>
+    <string name="section_target">当前连接</string>
+    <string name="section_connect">连接电脑</string>
+    <string name="section_status">运行状态</string>
+    <string name="target_none">还没有选择电脑</string>
+    <string name="target_ready">%1$s · %2$s</string>
+    <string name="advanced_title_closed">高级设置</string>
+    <string name="advanced_title_open">高级设置（点一下收起）</string>
+
     <string name="button_start">开始发送</string>
     <string name="button_stop">停止发送</string>
 
@@ -45,6 +54,9 @@
     <string name="short_code_failed">短码不对（抄错一位就对不上），请对着电脑屏幕再核一遍</string>
     <string name="short_code_paired">已填入 %1$s（这台配过对，可直接开始）</string>
     <string name="short_code_no_pairing">已填入 %1$s；这台还没配对，本次只能明文发送。要加密请先扫码配对。</string>
+    <string name="identifying_hub">正在确认 %1$s 上是哪台电脑…</string>
+    <string name="short_code_identified">已找到 %1$s（%2$s）</string>
+    <string name="short_code_unreachable">已填入 %1$s，但它没有应答：可能电脑没开，或手机不在同一个 Wi-Fi。这次也拿不到加密所需的信息，只能明文发送。</string>
 
     <string name="scan_failed">没认出二维码。请对准电脑上的二维码、拍清楚一点再试</string>
     <string name="qr_applied">已读取电脑信息：%1$s，点开始发送即可</string>

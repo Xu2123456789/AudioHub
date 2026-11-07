@@ -7,10 +7,15 @@ import java.net.URLEncoder
 /**
  * 二维码里那串 URI 的内容。
  *
- * 格式：`audiohub://c/1?h=<ip>&p=<port>[&k=][&i=][&f=][&n=]`
+ * 格式：`audiohub://c/1?h=<ip>&p=<port>[&k=][&i=][&f=][&n=][&s=]`
  *
  * 密钥是可选的：带上它，手机扫一次就完成配对；不带它，手机还得输一次密钥。
  * 这是用户的选择（电脑端有开关），协议层只如实记录。
+ *
+ * [securityMode] 是**电脑当前对发送方的要求**，和密钥、身份一起带过来。
+ * 没有它的时候，扫码连上的手机会一律按"加密可选"处理，于是电脑关掉了加密、
+ * 手机仍逐包封口 —— 电脑那边连信封都没有，密文被当成读不懂的包整个丢掉，
+ * 两边都不报错、声音永远不来。这一条是真实故障换来的，别删。
  */
 data class QrPayload(
     val host: String,
@@ -19,6 +24,7 @@ data class QrPayload(
     val hubId: String? = null,
     val fingerprint: String? = null,
     val name: String? = null,
+    val securityMode: Int? = null,
 ) {
     /** 扫完这一张，是否已经具备加密所需的全部条件。 */
     val carriesKey: Boolean get() = !pairingKey.isNullOrBlank()
@@ -61,6 +67,11 @@ object ConnectionQr {
             text.append("&n=").append(escape(it))
         }
 
+        // 纯数字而不是英文名字：旧手机要能忽略不认识的字段，新手机不该为了读它去解析英文。
+        payload.securityMode?.let {
+            text.append("&s=").append(it)
+        }
+
         return text.toString()
     }
 
@@ -93,7 +104,11 @@ object ConnectionQr {
         val fingerprint = fields["f"]?.takeIf { it.length in 1..MAX_FINGERPRINT_LENGTH }
         val name = fields["n"]?.takeIf { it.length in 1..MAX_NAME_LENGTH }
 
-        return QrPayload(host, port, key, hubId, fingerprint, name)
+        // 认不出的模式一律当作"没带"（null），不要默认成"加密可选"。
+        // 默认成可选正是那个"电脑关了加密、手机仍封包"的故障来源。
+        val mode = fields["s"]?.toIntOrNull()?.takeIf { it in 0..2 }
+
+        return QrPayload(host, port, key, hubId, fingerprint, name, mode)
     }
 
     private fun parseQuery(query: String): Map<String, String> {

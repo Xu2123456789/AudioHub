@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 灰底卡片：用在"需要你填点东西"这类次要区块（密钥、提示），和主卡片区分开。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#F2F4F7" />
+    <corners android:radius="12dp" />
+</shape>

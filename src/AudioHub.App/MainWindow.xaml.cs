@@ -87,9 +87,17 @@ public partial class MainWindow : Window
         RefreshDevices();
         RebuildChannelRows();
 
-        // Set the remembered choice without treating it as a user action.
+        // Set the remembered choices without treating them as user actions.
         _suppressPanelEvents = true;
         QrIncludeKeyCheck.IsChecked = _settings.QrIncludesPairingKey;
+
+        // 二维码默认就摆出来，面板是否展开也按上次的选择来。
+        // 两件事都必须在这里做：_qrVisible 要在 RefreshConnectionInfo 之前定下来，
+        // 否则第一次刷新会按"不显示"跳过生成，用户看到的是一块空白。
+        _qrVisible = _settings.QrVisible;
+        ApplyQrVisibility();
+        ManualExpander.IsExpanded = _settings.ManualPanelExpanded;
+
         _suppressPanelEvents = false;
 
         // 接收加密策略：以保存的值为准，不当作一次用户操作。
@@ -380,13 +388,18 @@ public partial class MainWindow : Window
         }
 
         bool includeKey = QrIncludeKeyCheck.IsChecked == true && _pairingKey.Length > 0;
+
+        // The mode goes in so a scan does not have to guess it. Without this the phone fell back
+        // to "encryption optional" and kept sealing packets at a hub that had encryption off,
+        // where nothing can read them — silent on both ends.
         string payload = ConnectionQr.Build(new ConnectionQrPayload(
             _recommendedAddress,
             ShortCode.DefaultPort,
             includeKey ? _pairingKey : null,
             _host.Identity.HubId,
             _host.Identity.Fingerprint,
-            Environment.MachineName));
+            Environment.MachineName,
+            _host.SecurityMode));
 
         QrImage.Source = RenderQr(payload);
         QrNote.Text = includeKey
@@ -414,12 +427,15 @@ public partial class MainWindow : Window
 
     private void ManualExpander_Expanded(object sender, RoutedEventArgs e)
     {
+        // 自动化展开（"开始收包但一直没声音"时替用户打开这块）不算用户的选择，
+        // 所以不能在这里写进设置 —— 那会让人下次启动莫名看到一整面板技术细节。
         if (_suppressPanelEvents)
         {
             return;
         }
 
         _userTouchedPanel = true;
+        RememberPanelState(true);
         RefreshConnectionInfo();
     }
 
@@ -431,6 +447,13 @@ public partial class MainWindow : Window
         }
 
         _userTouchedPanel = true;
+        RememberPanelState(false);
+    }
+
+    private void RememberPanelState(bool expanded)
+    {
+        _settings.ManualPanelExpanded = expanded;
+        _settings.Save();
     }
 
     private void RevealKey_Click(object sender, RoutedEventArgs e)
@@ -481,8 +504,11 @@ public partial class MainWindow : Window
     private void ToggleQr_Click(object sender, RoutedEventArgs e)
     {
         _qrVisible = !_qrVisible;
-        QrImage.Visibility = _qrVisible ? Visibility.Visible : Visibility.Collapsed;
-        ShowQrButton.Content = _qrVisible ? "隐藏二维码" : "显示二维码";
+        ApplyQrVisibility();
+
+        // 记住这个选择。用户明确要求过"折叠与否由我决定"，那就不能下次启动又替他展开。
+        _settings.QrVisible = _qrVisible;
+        _settings.Save();
 
         if (_qrVisible)
         {
@@ -492,6 +518,16 @@ public partial class MainWindow : Window
         {
             QrNote.Text = string.Empty;
         }
+    }
+
+    /// <summary>
+    /// 把 <see cref="_qrVisible"/> 落到控件上。构造时和点击时走同一段，
+    /// 免得两处各写一份"可见性 + 按钮文字"而慢慢对不上。
+    /// </summary>
+    private void ApplyQrVisibility()
+    {
+        QrImage.Visibility = _qrVisible ? Visibility.Visible : Visibility.Collapsed;
+        ShowQrButton.Content = _qrVisible ? "隐藏二维码" : "显示二维码";
     }
 
     private void QrIncludeKey_Changed(object sender, RoutedEventArgs e)
@@ -524,9 +560,18 @@ public partial class MainWindow : Window
 
         // Normalise through the one parser so the settings file can never drift to a
         // spelling that the loader would read as a different mode.
-        _settings.AdvertisedSecurity =
-            SecurityModeNames.ToName(SecurityModeNames.Parse(item.Tag as string));
+        SecurityMode mode = SecurityModeNames.Parse(item.Tag as string);
+        _settings.AdvertisedSecurity = SecurityModeNames.ToName(mode);
         _settings.Save();
+
+        // Apply to the running hub right away. Saving alone used to leave the window showing the
+        // new value while the hub kept enforcing the old one — a disagreement that is silent from
+        // both sides, and exactly how a phone ends up sealing packets at a hub with no envelope.
+        _host.SetSecurityMode(mode);
+
+        // The key goes away when encryption is off, and the QR carries the mode, so both have to
+        // be rebuilt rather than waiting for the next 250 ms tick.
+        RefreshConnectionInfo();
         RefreshSecurityNote();
     }
 
@@ -550,7 +595,9 @@ public partial class MainWindow : Window
         }
         else
         {
-            SecurityModeNote.Text = "已保存，重启 AudioHub 后生效";
+            // Should not happen any more: the change is applied to the running host immediately.
+            // If it ever does, saying "restart later" would hide a real failure, so say what it is.
+            SecurityModeNote.Text = "设置未能生效，请重新选择";
             SecurityModeNote.Foreground = new SolidColorBrush(Color.FromRgb(0xA3, 0x2D, 0x2D));
         }
     }
