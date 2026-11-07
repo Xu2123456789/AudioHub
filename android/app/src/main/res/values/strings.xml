@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AudioHub Sender</string>
+    <!-- 界面抬头用短名：完整名 "AudioHub Sender" 在 22sp 下会顶到图标。
+         "Sender" 由副标题承担说明，抬头保持品牌名。 -->
+    <string name="app_title">AudioHub</string>
+    <string name="storage_note_prefix">注意：%1$s</string>
 
     <string name="app_subtitle">把电脑上的声音送到这副耳机</string>
     <string name="section_target">当前连接</string>
@@ -32,7 +36,7 @@
     <string name="hub_accepts_key">这台电脑支持加密发送。填了密钥就加密；不填也能连，但会是明文（不加密）。</string>
     <string name="error_key_needed">这台电脑要求加密，请先填写密钥</string>
     <string name="error_key_without_identity">填了密钥，但还不知道对方是哪台电脑 —— 派生密钥要用电脑身份，所以这次加密不了。请从上面的列表里选那台电脑，或扫一次它的二维码；只想明文发送就清空密钥框。</string>
-    <string name="error_bad_key">密钥看不懂：只认 0-9 和字母（不含 I L O U），可以带或不带短横线</string>
+    <string name="error_bad_key">密钥看不懂：只能填数字和字母（不含 I L O U），可以带或不带短横线</string>
     <string name="paired_ok">已记住这台电脑，以后不用再输密钥</string>
 
     <string name="notification_channel_name">音频捕获</string>
@@ -42,20 +46,17 @@
     <string name="share_mode_whole">整个屏幕</string>
     <string name="share_mode_app">单个应用</string>
 
-    <string name="update_section">更新</string>
     <string name="button_check_update">检查更新</string>
     <string name="update_progress">下载中 %1$d%%</string>
 
-    <string name="button_scan_qr">拍照扫二维码</string>
+    <string name="button_scan_qr">扫二维码</string>
     <string name="button_short_code">输入短码</string>
-    <string name="advanced_toggle">高级：端口 / 流名称（保持默认即可）</string>
 
     <string name="short_code_title">输入电脑上的六位短码</string>
     <string name="short_code_hint">例如 0M3RM2</string>
     <string name="short_code_ok">连接</string>
     <string name="short_code_failed">短码不对（抄错一位就对不上），请对着电脑屏幕再核一遍</string>
     <string name="short_code_paired">已填入 %1$s（这台配过对，可直接开始）</string>
-    <string name="short_code_no_pairing">已填入 %1$s；这台还没配对，本次只能明文发送。要加密请先扫码配对。</string>
     <string name="identifying_hub">正在确认 %1$s 上是哪台电脑…</string>
     <string name="short_code_identified">已找到 %1$s（%2$s）</string>
     <string name="short_code_unreachable">已填入 %1$s，但它没有应答：可能电脑没开，或手机不在同一个 Wi-Fi。这次也拿不到加密所需的信息，只能明文发送。</string>

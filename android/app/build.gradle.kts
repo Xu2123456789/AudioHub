@@ -36,8 +36,10 @@ android {
         // 2.2.0 = 扫码改为实时预览（CameraX），并修掉"扫码/短码会把电脑原话改写成明文"。
         // 2.3.0 = 界面重做成卡片式（整页可滚、长提示不再被截断）+ 手机端每次开始前单播确认电脑身份与加密模式。
         // 2.3.1 = 顶部改成自己的抬头（去掉系统 ActionBar）+ 换电脑时清掉旧密钥 + 发送中复查电脑加密设置。
-        versionCode = 5
-        versionName = "2.3.1"
+        // 2.3.2 = 发布前静态检查收尾：补 <queries>（否则拍照扫码在 Android 11+ 直接不可用）、
+        //         密钥不随备份/换机迁出、安装未知来源的跳转加降级、lint 归零。
+        versionCode = 6
+        versionName = "2.3.2"
     }
 
     buildTypes {
@@ -62,8 +64,12 @@ android {
     sourceSets["test"].java.srcDirs("src/test/kotlin")
 
     lint {
-        // 少了启动图标之类的只是警告，不要让它们把构建拦下来。
-        abortOnError = false
+        // 现在是 0 Error / 0 Warning，所以要求 lint 一旦出现 Error 就拦住构建。
+        // 之前这里写的是 false（"图标之类的警告别拦我"），但那个开关同时把
+        // 真错误也放过去了 —— QueryPermissionsNeeded 那种会直接打死拍照扫码的问题
+        // 就是这么漏到实机上的。警告不拦，错误必须拦。
+        abortOnError = true
+        warningsAsErrors = false
     }
 }
 

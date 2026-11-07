@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+
+    <!--
+        Android 11（API 30）起，应用默认"看不见"别的应用。不在这里声明要在找什么，
+        `intent.resolveActivity(packageManager)` 对系统相机也会返回 null —— 结果就是
+        明明有相机，程序却报"没有找到可用的相机应用"，拍照识别这条路直接死掉。
+        这是一条真实的功能性声明，不是权限申请。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
 
     <!-- 发送 VBAN 报文 -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -32,22 +46,30 @@
     <!-- 应用内更新：从 GitHub 下载新 APK 后唤起系统安装器（Android 8 起装未知来源要先授权） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- allowBackup=false 与 dataExtractionRules 并存不是重复：
+         前者管 Android 11 及以下（adb backup / 老式云备份），后者管 12+ 的新规则。
+         只留后者的话，11 上仍会把配对密钥备份出去。 -->
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.Light">
+        android:theme="@android:style/Theme.DeviceDefault.Light"
+        tools:ignore="DataExtractionRules">
 
         <!-- 主界面不要系统 ActionBar：它会顶着一条写着 "AudioHub Sender" 的灰条，
              和我们自己画的卡片式界面完全两套语言。标题改由界面自己画（带图标 + 副标题）。 -->
+        <!-- 竖屏锁死不跟随旋屏：这是"发送端遥控面板"，横过来只会把卡片拉成长条。
+             Lint 的 DiscouragedApi/LockedOrientationActivity 是针对平板/折叠屏的通用提醒，
+             本项目手机定屏是有意的取舍，这里显式抑制并留下理由。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -60,7 +82,8 @@
             android:exported="false"
             android:label="@string/scan_live_title"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity" />
 
         <!-- 捕获服务。exported=false：只有本应用能启动它。 -->
         <service

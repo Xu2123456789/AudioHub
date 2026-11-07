@@ -3,7 +3,6 @@ package com.audiohub.sender
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -70,7 +69,7 @@ class Updater(private val context: Context) {
 
             post(listener) { it.onProgress(100) }
             post(listener) { it.onMessage("下载完成，准备安装") }
-            post(listener) { triggerInstall() }
+            post(listener) { triggerInstall(it) }
             post(listener) { it.onDone() }
         }.apply { isDaemon = true }.start()
     }
@@ -171,28 +170,57 @@ class Updater(private val context: Context) {
         }
     }
 
-    private fun triggerInstall() {
+    private fun triggerInstall(listener: Listener) {
         val file = File(ApkProvider.apkDir(context), UPDATE_FILE_NAME)
         if (!file.isFile) {
+            listener.onMessage("安装包不存在，请重新下载")
             return
         }
 
-        // Android 8（API 26）起装"未知来源"要先授权；没授权就带用户去开。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !context.packageManager.canRequestPackageInstalls()
-        ) {
-            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
-                .setData(Uri.parse("package:${context.packageName}"))
-            context.startActivity(intent)
+        // 装"未知来源"要先授权；没授权就带用户去开。
+        // （minSdk 是 30，canRequestPackageInstalls 从 API 26 起才有，所以不用再判版本。）
+        if (!context.packageManager.canRequestPackageInstalls()) {
+            openUnknownSourcesSetting(listener)
             return
         }
 
+        launchInstaller(listener)
+    }
+
+    /**
+     * 带用户去"安装未知应用"授权页。
+     * 各厂商 ROM 对这个 action 的支持差别很大，个别机型会直接抛
+     * ActivityNotFoundException；不能让它把整个更新流程崩掉，
+     * 所以逐级降级，最后退回应用详情页。
+     */
+    private fun openUnknownSourcesSetting(listener: Listener) {
+        val attempts = listOf(
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                .setData(Uri.parse("package:${context.packageName}")),
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(Uri.parse("package:${context.packageName}")),
+        )
+        for (intent in attempts) {
+            if (runCatching { context.startActivity(intent) }.isSuccess) {
+                listener.onMessage("请在打开的页面里允许本应用安装，然后再次点击更新")
+                return
+            }
+        }
+        listener.onMessage("无法打开授权页面，请手动到「设置 → 应用 → 安装未知应用」里允许本应用安装")
+    }
+
+    /** 拉起系统安装器。uri 由 ApkProvider 提供，带一次性读权限。 */
+    private fun launchInstaller(listener: Listener) {
         val uri = ApkProvider.contentUriFor(UPDATE_FILE_NAME)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(intent)
+        runCatching { context.startActivity(intent) }
+            .onFailure {
+                listener.onMessage("无法打开系统安装器，请确认安装包已完整下载后重试")
+            }
     }
 
     private fun currentVersion(): String? = runCatching {

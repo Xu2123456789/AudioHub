@@ -1,5 +1,6 @@
 package com.audiohub.sender
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
@@ -197,6 +198,12 @@ class AudioCaptureService : Service() {
         thread.start()
     }
 
+    // Lint 会在这里报 MissingPermission（RECORD_AUDIO），是误报：
+    // 走回放捕获（AudioPlaybackCaptureConfiguration）时，AudioRecord.Builder.build()
+    // 要的是 MediaProjection 的授权结果，不是 RECORD_AUDIO 运行时权限。
+    // 真出问题时 build()/startRecording() 会抛异常，外层 catch (Throwable) 会把它
+    // 记进 CaptureStatus.lastError 并展示给用户，不会静默失败。
+    @SuppressLint("MissingPermission")
     private fun runCapture(
         resultCode: Int,
         resultData: Intent,

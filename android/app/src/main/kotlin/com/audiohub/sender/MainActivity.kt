@@ -241,7 +241,7 @@ class MainActivity : Activity() {
         val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         titles.addView(
             TextView(this).apply {
-                text = "AudioHub"
+                text = getString(R.string.app_title)
                 textSize = 22f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(INK)
@@ -474,7 +474,7 @@ class MainActivity : Activity() {
                 TextView(this).apply {
                     textSize = 12f
                     setTextColor(DANGER)
-                    text = "注意：$note"
+                    text = getString(R.string.storage_note_prefix, note)
                     setPadding(dp(2), dp(10), dp(2), 0)
                 },
             )

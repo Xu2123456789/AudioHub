@@ -407,6 +407,15 @@ public partial class MainWindow : Window
     /// </remarks>
     private void RegenerateQrIfChanged()
     {
+        // 没有可用地址时不能走判重这条路：BuildQrPayload 会用空主机名编出一张"看起来正常"
+        // 的二维码，手机扫了会连到一个空地址。这种情况交给 RegenerateQr 去写那句
+        // "没有可用地址，二维码生成不了。"，并把 _lastQrPayload 清掉。
+        if (_recommendedAddress.Length == 0)
+        {
+            RegenerateQr();
+            return;
+        }
+
         string payload = BuildQrPayload();
         if (payload == _lastQrPayload)
         {
