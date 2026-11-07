@@ -11,7 +11,7 @@
          2.1.0: manual connection (short code / QR). Kept in step with the Android versionName,
          because "两端版本不一致" is one of the first things to check when audio does not arrive.
          2.2.0: phone scans QR live (CameraX); tray shows why plaintext packets were refused. -->
-    <Version>2.3.2</Version>
+    <Version>2.3.5</Version>
   </PropertyGroup>
 
   <ItemGroup>

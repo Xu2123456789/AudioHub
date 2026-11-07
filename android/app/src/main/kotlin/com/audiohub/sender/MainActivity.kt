@@ -170,13 +170,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 状态栏跟着页面底色走，图标转深色。不然去掉 ActionBar 之后，
-        // 顶上会剩一条和页面不同色的横带，看着像少画了一块。
+        // 状态栏跟着页面底色走。setStatusBarColor 只是把颜色记到 PhoneWindow 的
+        // 字段上、不碰 DecorView，所以在 setContentView 之前调用是安全的
+        //（Android 15 起它已被标为 deprecated，被系统忽略，但不会出错）。
         window.statusBarColor = BG
-        window.insetsController?.setSystemBarsAppearance(
-            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
-            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
-        )
 
         pairings = PairedHubStore(this)
         // 兜底恢复：若上次静音后进程被杀（记录残留），打开 App 时就把音量恢复回去。
@@ -184,6 +181,25 @@ class MainActivity : Activity() {
         // 所以必须在这里也做一次（逻辑抽在 MuteRecovery.kt，两端共用一份键）。
         recoverVolumeIfNeeded(this)
         setContentView(buildUi())
+
+        // ---- 必须晚于 setContentView --------------------------------------------
+        // PhoneWindow.getInsetsController() 的实现就是 `return mDecor.getWindowInsetsController();`，
+        // 而 mDecor（DecorView）是在 setContentView 里调 installDecor() 时才被创建出来的。
+        // 在它之前访问 → NullPointerException。
+        //
+        // 注意 `?.` 在这里**完全挡不住**：抛异常的是 getter 内部，不是返回 null。
+        // 2.3.1 把这两行写在 super.onCreate 之后、setContentView 之前，
+        // 于是在 Android 16（Redmi K80）上每次启动都白屏退出，而 2.3.0 没有这段代码所以正常。
+        //
+        // 再包一层 runCatching：这一行只影响状态栏图标是深色还是浅色，
+        // 不该有任何机会让整个界面起不来。
+        runCatching {
+            window.insetsController?.setSystemBarsAppearance(
+                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+            )
+        }
+
         restoreSelection()
         renderHubList()
 
@@ -233,7 +249,13 @@ class MainActivity : Activity() {
         }
         header.addView(
             ImageView(this).apply {
-                setImageResource(R.mipmap.ic_launcher)
+                // 图标只是装饰，不该有能力把整个界面拖垮。
+                // 2026-11-07 排查"打开即白屏闪退"时，这一行曾被当成可疑项（当时图标资源
+                // 被改成了带 <monochrome> 的 adaptive-icon）。最终根因不在图标，而在上面
+                // 那处 insetsController。这个兜底仍然留着，防的是另一类事：万一某个机型
+                // 解析图标失败，界面应该照常出来、只是少个图标，而不是整个起不来。
+                runCatching { setImageResource(R.mipmap.ic_launcher) }
+                    .onFailure { visibility = View.GONE }
                 layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(12) }
             },
         )

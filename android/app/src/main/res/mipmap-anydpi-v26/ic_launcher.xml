@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    自适应图标的前景/背景两层。目录必须是 -v26：adaptive-icon 是 API 26 才有的标签，
+    放在无版本限定的 mipmap 目录里，等于告诉系统"所有版本都用它"。
+
+    这里刻意**不放** <monochrome>（Android 13 的主题图标）。AOSP 的
+    AdaptiveIconDrawable 在 API 30 遇到未知子标签确实会静默跳过，理论上安全；
+    2026-11-07 排查"白屏闪退"时它被当过可疑项，后来定位到的根因是 MainActivity
+    在 setContentView 之前访问 insetsController，与图标无关。
+    不放它的理由现在只剩一条：这条路径没在真机上验过，不值得为纯装饰效果
+    留一个未验证的启动期依赖。宁可用 tools:ignore 压掉 lint 的提醒。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="MonochromeLauncherIcon">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

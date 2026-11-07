@@ -38,8 +38,14 @@ android {
         // 2.3.1 = 顶部改成自己的抬头（去掉系统 ActionBar）+ 换电脑时清掉旧密钥 + 发送中复查电脑加密设置。
         // 2.3.2 = 发布前静态检查收尾：补 <queries>（否则拍照扫码在 Android 11+ 直接不可用）、
         //         密钥不随备份/换机迁出、安装未知来源的跳转加降级、lint 归零。
-        versionCode = 6
-        versionName = "2.3.2"
+        // 2.3.3 = 排查"打开即白屏闪退"：把 2.3.2 加在 adaptive-icon 里的 <monochrome>
+        //         和 mipmap-anydpi 目录改名一起撤回（恢复 -v26）。见 docs 里的排查记录。
+        // 2.3.4 = 继续二分：2.3.1 原样 + 只保留 <queries>，撤掉 dataExtractionRules
+        //         与 activity label 的改动。用来判定崩溃是不是清单资源引起的。
+        // 2.3.5 = 修掉真正的崩溃：window.insetsController 在 setContentView 之前访问，
+        //         PhoneWindow.getInsetsController() 内部解引用 mDecor（还 null）→ NPE。
+        versionCode = 10
+        versionName = "2.3.5"
     }
 
     buildTypes {
